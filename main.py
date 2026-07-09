@@ -293,9 +293,9 @@ def _telnet_exec(port: int, command: str, timeout: float = 5) -> str:
 
 # ---------------- Routes ----------------
 
-@app.get("/")
-async def root():
-    return {"message": "VLC Control API"}
+# @app.get("/")
+# async def root():
+#     return {"message": "VLC Control API"}
 
 
 @app.get("/movies/probe/{path:path}")
@@ -514,6 +514,7 @@ from fastapi.responses import FileResponse
 # Serve Next.js static export files from 'out' folder
 OUT_DIR = Path(__file__).parent / "out"
 
+@app.get('/')
 @app.get("/{catchall:path}", include_in_schema=False)
 async def serve_static(catchall: str):
     if not OUT_DIR.exists():
