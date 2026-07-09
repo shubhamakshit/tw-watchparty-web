@@ -1,0 +1,11 @@
+.idea/
+.venv/
+__pycache__/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+out/
+*.log
+*.pyc
+.DS_Store
+movies/

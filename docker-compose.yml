@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  watchparty:
+    build: .
+    container_name: watchparty-bridge
+    ports:
+      - "8000:8000"
+      # Expose dynamic ports if you want to inspect VLC HTTP/Telnet directly:
+      # - "4200-4250:4200-4250"
+    environment:
+      - BASE_MOVIES_DIR=/movies
+      - VLC_PASSWORD=pass
+    volumes:
+      # Replace the left path with the absolute path to your movies folder on your host server
+      - C:\Users\Administrator\Downloads:/movies
+    restart: unless-stopped

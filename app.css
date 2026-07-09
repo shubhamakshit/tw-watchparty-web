@@ -1,0 +1,81 @@
+Stopwatch {
+    background: $boost;
+    height: 5;
+    margin: 1;
+    min-width: 50;
+    padding: 1;
+}
+
+Screen{
+    layout: grid;
+    grid-size: 3 3;
+    grid-gutter: 1;
+
+}
+
+TimeDisplay {
+    text-align: center;
+    color: $foreground-muted;
+    height: 3;
+}
+
+TimeDisplay#hover{
+color:green;
+}
+
+Button {
+    width: 10;
+}
+
+#start {
+    dock: left;
+}
+
+#stop {
+    dock: left;
+    display: none;
+}
+
+#reset {
+    dock: right;
+}
+
+.started {
+    background: $success-muted;
+    color: $text;
+}
+
+.started TimeDisplay {
+    color: $foreground;
+}
+
+.started #start {
+    display: none
+}
+
+.started #stop {
+    display: block
+}
+
+.started #reset {
+    visibility: hidden
+}
+
+#dialog{
+
+row-span:2;
+             column-span:1;
+    align: center middle;
+             grid-gutter: 1 2;
+             grid-rows: 1fr 3;
+             padding: 0 1;
+             width: 60;
+             height: 30;
+             border: thick $background 80%;
+             background: $surface;
+}
+
+
+#dialog-buttons{
+    grid-size:2;
+}

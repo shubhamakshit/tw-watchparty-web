@@ -1,0 +1,11 @@
+.git
+.idea
+.venv
+__pycache__
+frontend/node_modules
+frontend/.next
+frontend/out
+out
+*.zip
+*.rar
+*.tar.gz
