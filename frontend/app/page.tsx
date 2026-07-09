@@ -17,12 +17,14 @@ import {
     ScrollArea,
     Select,
     SimpleGrid,
+    Slider,
     Stack,
     Switch,
     Text,
     Textarea,
     TextInput,
     Title,
+    useMantineColorScheme,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
@@ -32,6 +34,10 @@ import {
     IconPlus,
     IconRefresh,
     IconTrash,
+    IconSun,
+    IconMoon,
+    IconVolume,
+    IconVolumeOff,
 } from '@tabler/icons-react';
 import APIManager from '@/api/Api';
 
@@ -143,6 +149,7 @@ function statusColor(status: string): string {
 // ---------- Component ----------
 
 export default function Home() {
+    const { colorScheme, toggleColorScheme } = useMantineColorScheme();
     const [navOpened, { toggle: toggleNav }] = useDisclosure();
     const [startModalOpened, { open: openStartModal, close: closeStartModal }] = useDisclosure();
 
@@ -193,6 +200,15 @@ export default function Home() {
     const [probing, setProbing] = useState(false);
     const [probeError, setProbeError] = useState<string | null>(null);
     const [instanceLogs, setInstanceLogs] = useState<string[]>([]);
+
+    // Active instance control QOL states
+    const [activeAudioTracks, setActiveAudioTracks] = useState<any[]>([]);
+    const [activeSubTracks, setActiveSubTracks] = useState<any[]>([]);
+    const [activeAudioTrack, setActiveAudioTrack] = useState<number | null>(null);
+    const [activeSubTrack, setActiveSubTrack] = useState<number | null>(null);
+    const [volume, setVolume] = useState<number>(100);
+    const [isMuted, setIsMuted] = useState<boolean>(false);
+    const [prevVolume, setPrevVolume] = useState<number>(100);
 
     // Command console
     const [command, setCommand] = useState('');
@@ -322,7 +338,14 @@ export default function Home() {
             fetch(APIManager.STATUS(id), { method: 'GET' })
                 .then((res) => res.json())
                 .then((res: StatusResponse) => {
-                    if (activeIdRef.current === id) setStatus(res);
+                    if (activeIdRef.current === id) {
+                        setStatus(res);
+                        if (res.message && typeof res.message.volume === 'number') {
+                            const currentVolPct = Math.round((res.message.volume / 256) * 100);
+                            setVolume(currentVolPct);
+                            setIsMuted(res.message.volume === 0);
+                        }
+                    }
                 })
                 .catch(() => {});
             // Fetch logs
@@ -342,6 +365,60 @@ export default function Home() {
             if (pollRef.current) clearInterval(pollRef.current);
         };
     }, [activeId]);
+
+    // Probe active instance video path for QOL controls
+    useEffect(() => {
+        const activeInst = instances.find((i) => i.id === activeId);
+        if (!activeInst) {
+            setActiveAudioTracks([]);
+            setActiveSubTracks([]);
+            return;
+        }
+        fetch(APIManager.PROBE(activeInst.video_path))
+            .then((res) => {
+                if (!res.ok) throw new Error();
+                return res.json();
+            })
+            .then((data) => {
+                setActiveAudioTracks(data.audio || []);
+                setActiveSubTracks(data.subtitle || []);
+            })
+            .catch(() => {
+                setActiveAudioTracks([]);
+                setActiveSubTracks([]);
+            });
+    }, [activeId, instances]);
+
+    const handleVolumeChange = (val: number) => {
+        if (!activeId) return;
+        setVolume(val);
+        setIsMuted(val === 0);
+        // VLC volume is 0-512, where 256 is 100%
+        const vlcVol = Math.round((val / 100) * 256);
+        fetch(APIManager.VOLUME(activeId, String(vlcVol)), { method: 'POST' }).catch(() => {});
+    };
+
+    const handleMuteToggle = () => {
+        if (!activeId) return;
+        if (isMuted) {
+            handleVolumeChange(prevVolume || 100);
+            setIsMuted(false);
+        } else {
+            setPrevVolume(volume);
+            handleVolumeChange(0);
+            setIsMuted(true);
+        }
+    };
+
+    const handleTrackChange = (type: 'audio' | 'subtitle', val: number) => {
+        if (!activeId) return;
+        if (type === 'audio') {
+            setActiveAudioTrack(val);
+        } else {
+            setActiveSubTrack(val);
+        }
+        fetch(APIManager.TRACK(activeId, type, val), { method: 'POST' }).catch(() => {});
+    };
 
     const sendCommand = (cmd: string) => {
         if (!activeId) return;
@@ -504,182 +581,196 @@ export default function Home() {
             padding="md"
         >
             <AppShell.Header>
-                <Group h="100%" px="md">
-                    <Burger opened={navOpened} onClick={toggleNav} hiddenFrom="sm" size="sm" />
-                    <Title order={4}>The TWITCH WatchParty Bridge</Title>
-                    {activeInstance && (
-                        <Badge color={statusColor(activeInstance.status)} ml="auto">
-                            {activeInstance.name} · {activeInstance.status}
-                        </Badge>
-                    )}
+                <Group h="100%" px="md" justify="space-between" style={{ width: '100%', flexWrap: 'nowrap' }}>
+                    <Group gap="xs" style={{ flexWrap: 'nowrap' }}>
+                        <Burger opened={navOpened} onClick={toggleNav} hiddenFrom="sm" size="sm" />
+                        <Title order={4} style={{ whiteSpace: 'nowrap' }}>The TWITCH WatchParty Bridge</Title>
+                    </Group>
+                    <Group gap="xs" style={{ flexWrap: 'nowrap' }}>
+                        {activeInstance && (
+                            <Badge color={statusColor(activeInstance.status)}>
+                                {activeInstance.name} · {activeInstance.status}
+                            </Badge>
+                        )}
+                        <ActionIcon
+                            variant="default"
+                            onClick={() => toggleColorScheme()}
+                            size="lg"
+                            aria-label="Toggle color scheme"
+                        >
+                            {colorScheme === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />}
+                        </ActionIcon>
+                    </Group>
                 </Group>
             </AppShell.Header>
 
             {/* ---------------- Navbar: instance manager ---------------- */}
             <AppShell.Navbar p="md">
-                <Stack gap="xs">
-                    <Group justify="space-between">
-                        <Text size="sm" c="dimmed">
-                            VLC Instances
-                        </Text>
-                        <Group gap={4}>
-                            <ActionIcon
-                                variant="subtle"
-                                onClick={() =>
-                                    fetch(APIManager.LIST_INSTANCES())
-                                        .then((r) => r.json())
-                                        .then(setInstances)
-                                }
-                                loading={instancesLoading}
-                                aria-label="Refresh instances"
-                            >
-                                <IconRefresh size={16} />
-                            </ActionIcon>
-                            <ActionIcon variant="filled" onClick={openStartModal} aria-label="Start new instance">
-                                <IconPlus size={16} />
-                            </ActionIcon>
-                        </Group>
-                    </Group>
-
-                    <Select
-                        placeholder="Select an instance"
-                        data={instances
-                            .filter((item, index, self) => self.findIndex((i) => i.id === item.id) === index)
-                            .map((i) => ({
-                                value: i.id,
-                                label: `${i.name} (${i.status})`,
-                            }))}
-                        value={activeId}
-                        onChange={setActiveId}
-                        searchable
-                        nothingFoundMessage="No instances yet"
-                    />
-
-                    {activeInstance && (
-                        <Card withBorder padding="xs">
-                            <Stack gap={2}>
-                                <Text size="xs" c="dimmed">
-                                    PID: {activeInstance.pid ?? '—'}
-                                </Text>
-                                <Text size="xs" c="dimmed" truncate>
-                                    {activeInstance.video_path}
-                                </Text>
-                                <Text size="xs" c="dimmed">
-                                    telnet:{activeInstance.telnet_port} · http:{activeInstance.http_port}
-                                </Text>
-                            </Stack>
-                            <Group mt="xs" grow>
-                                <Button size="xs" color="orange" variant="light" onClick={() => stopActive(false)}>
-                                    Stop
-                                </Button>
-                                <Button size="xs" color="red" variant="light" onClick={() => stopActive(true)}>
-                                    Kill
-                                </Button>
+                <ScrollArea h="100%" scrollbarSize={6} offsetScrollbars>
+                    <Stack gap="xs" pr="xs">
+                        <Group justify="space-between">
+                            <Text size="sm" c="dimmed">
+                                VLC Instances
+                            </Text>
+                            <Group gap={4}>
+                                <ActionIcon
+                                    variant="subtle"
+                                    onClick={() =>
+                                        fetch(APIManager.LIST_INSTANCES())
+                                            .then((r) => r.json())
+                                            .then(setInstances)
+                                    }
+                                    loading={instancesLoading}
+                                    aria-label="Refresh instances"
+                                >
+                                    <IconRefresh size={16} />
+                                </ActionIcon>
+                                <ActionIcon variant="filled" onClick={openStartModal} aria-label="Start new instance">
+                                    <IconPlus size={16} />
+                                </ActionIcon>
                             </Group>
-                            <Button
-                                size="xs"
-                                mt={6}
-                                fullWidth
-                                color="red"
-                                variant="subtle"
-                                leftSection={<IconTrash size={14} />}
-                                onClick={deleteActive}
-                            >
-                                Remove
+                        </Group>
+
+                        <Select
+                            placeholder="Select an instance"
+                            data={instances
+                                .filter((item, index, self) => self.findIndex((i) => i.id === item.id) === index)
+                                .map((i) => ({
+                                    value: i.id,
+                                    label: `${i.name} (${i.status})`,
+                                }))}
+                            value={activeId}
+                            onChange={setActiveId}
+                            searchable
+                            nothingFoundMessage="No instances yet"
+                        />
+
+                        {activeInstance && (
+                            <Card withBorder padding="xs">
+                                <Stack gap={2}>
+                                    <Text size="xs" c="dimmed">
+                                        PID: {activeInstance.pid ?? '—'}
+                                    </Text>
+                                    <Text size="xs" c="dimmed" truncate>
+                                        {activeInstance.video_path}
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                        telnet:{activeInstance.telnet_port} · http:{activeInstance.http_port}
+                                    </Text>
+                                </Stack>
+                                <Group mt="xs" grow>
+                                    <Button size="xs" color="orange" variant="light" onClick={() => stopActive(false)}>
+                                        Stop
+                                    </Button>
+                                    <Button size="xs" color="red" variant="light" onClick={() => stopActive(true)}>
+                                        Kill
+                                    </Button>
+                                </Group>
+                                <Button
+                                    size="xs"
+                                    mt={6}
+                                    fullWidth
+                                    color="red"
+                                    variant="subtle"
+                                    leftSection={<IconTrash size={14} />}
+                                    onClick={deleteActive}
+                                >
+                                    Remove
+                                </Button>
+                            </Card>
+                        )}
+
+                        <Divider label="Media Controls" my="xs" />
+
+                        <SimpleGrid cols={2}>
+                            <Button onClick={() => sendCommand('play')} loading={sending} disabled={!activeId}>
+                                Play
                             </Button>
-                        </Card>
-                    )}
+                            <Button onClick={() => sendCommand('pause')} loading={sending} variant="light" disabled={!activeId}>
+                                Pause
+                            </Button>
+                            <Button onClick={() => sendCommand('stop')} loading={sending} color="red" variant="light" disabled={!activeId}>
+                                Stop
+                            </Button>
+                            <Button onClick={() => sendCommand('fullscreen')} loading={sending} variant="light" disabled={!activeId}>
+                                Fullscreen
+                            </Button>
+                            <Button onClick={() => sendCommand('prev')} loading={sending} variant="light" disabled={!activeId}>
+                                Previous
+                            </Button>
+                            <Button onClick={() => sendCommand('next')} loading={sending} variant="light" disabled={!activeId}>
+                                Next
+                            </Button>
+                            <Button onClick={() => sendCommand('snapshot')} loading={sending} variant="light" disabled={!activeId}>
+                                Snapshot
+                            </Button>
+                        </SimpleGrid>
 
-                    <Divider label="Media Controls" my="xs" />
+                        <Divider label="Seek" my="xs" />
+                        <SimpleGrid cols={2}>
+                            <Button onClick={() => sendCommand('seek -60s')} variant="default" disabled={!activeId}>
+                                -60s
+                            </Button>
+                            <Button onClick={() => sendCommand('seek +60s')} variant="default" disabled={!activeId}>
+                                +60s
+                            </Button>
+                            <Button onClick={() => sendCommand('seek -10s')} variant="default" disabled={!activeId}>
+                                -10s
+                            </Button>
+                            <Button onClick={() => sendCommand('seek +10s')} variant="default" disabled={!activeId}>
+                                +10s
+                            </Button>
+                        </SimpleGrid>
 
-                    <SimpleGrid cols={2}>
-                        <Button onClick={() => sendCommand('play')} loading={sending} disabled={!activeId}>
-                            Play
-                        </Button>
-                        <Button onClick={() => sendCommand('pause')} loading={sending} variant="light" disabled={!activeId}>
-                            Pause
-                        </Button>
-                        <Button onClick={() => sendCommand('stop')} loading={sending} color="red" variant="light" disabled={!activeId}>
-                            Stop
-                        </Button>
-                        <Button onClick={() => sendCommand('fullscreen')} loading={sending} variant="light" disabled={!activeId}>
-                            Fullscreen
-                        </Button>
-                        <Button onClick={() => sendCommand('prev')} loading={sending} variant="light" disabled={!activeId}>
-                            Previous
-                        </Button>
-                        <Button onClick={() => sendCommand('next')} loading={sending} variant="light" disabled={!activeId}>
-                            Next
-                        </Button>
-                        <Button onClick={() => sendCommand('snapshot')} loading={sending} variant="light" disabled={!activeId}>
-                            Snapshot
-                        </Button>
-                    </SimpleGrid>
+                        <Divider label="Volume" my="xs" />
+                        <SimpleGrid cols={2}>
+                            <Button onClick={() => sendCommand('voldown 1')} variant="default" disabled={!activeId}>
+                                Vol -
+                            </Button>
+                            <Button onClick={() => sendCommand('volup 1')} variant="default" disabled={!activeId}>
+                                Vol +
+                            </Button>
+                        </SimpleGrid>
 
-                    <Divider label="Seek" my="xs" />
-                    <SimpleGrid cols={2}>
-                        <Button onClick={() => sendCommand('seek -60s')} variant="default" disabled={!activeId}>
-                            -60s
-                        </Button>
-                        <Button onClick={() => sendCommand('seek +60s')} variant="default" disabled={!activeId}>
-                            +60s
-                        </Button>
-                        <Button onClick={() => sendCommand('seek -10s')} variant="default" disabled={!activeId}>
-                            -10s
-                        </Button>
-                        <Button onClick={() => sendCommand('seek +10s')} variant="default" disabled={!activeId}>
-                            +10s
-                        </Button>
-                    </SimpleGrid>
+                        <Divider label="Playback rate" my="xs" />
+                        <SimpleGrid cols={3}>
+                            <Button onClick={() => sendCommand('slower')} variant="default" disabled={!activeId}>
+                                Slower
+                            </Button>
+                            <Button onClick={() => sendCommand('normal')} variant="default" disabled={!activeId}>
+                                Normal
+                            </Button>
+                            <Button onClick={() => sendCommand('faster')} variant="default" disabled={!activeId}>
+                                Faster
+                            </Button>
+                        </SimpleGrid>
 
-                    <Divider label="Volume" my="xs" />
-                    <SimpleGrid cols={2}>
-                        <Button onClick={() => sendCommand('voldown 1')} variant="default" disabled={!activeId}>
-                            Vol -
-                        </Button>
-                        <Button onClick={() => sendCommand('volup 1')} variant="default" disabled={!activeId}>
-                            Vol +
-                        </Button>
-                    </SimpleGrid>
+                        <Divider label="Toggles" my="xs" />
+                        <SimpleGrid cols={3}>
+                            <Button size="xs" variant={message?.loop ? 'filled' : 'default'} onClick={() => sendCommand('loop')} disabled={!activeId}>
+                                Loop
+                            </Button>
+                            <Button size="xs" variant={message?.repeat ? 'filled' : 'default'} onClick={() => sendCommand('repeat')} disabled={!activeId}>
+                                Repeat
+                            </Button>
+                            <Button size="xs" variant={message?.random ? 'filled' : 'default'} onClick={() => sendCommand('random')} disabled={!activeId}>
+                                Random
+                            </Button>
+                        </SimpleGrid>
 
-                    <Divider label="Playback rate" my="xs" />
-                    <SimpleGrid cols={3}>
-                        <Button onClick={() => sendCommand('slower')} variant="default" disabled={!activeId}>
-                            Slower
+                        <Divider label="Custom command" my="xs" />
+                        <TextInput
+                            value={command}
+                            onChange={(e) => setCommand(e.currentTarget.value)}
+                            placeholder="e.g. volume 150"
+                            onKeyDown={(e) => e.key === 'Enter' && execButtonHandler()}
+                            disabled={!activeId}
+                        />
+                        <Button fullWidth onClick={execButtonHandler} loading={sending} disabled={!activeId}>
+                            Execute
                         </Button>
-                        <Button onClick={() => sendCommand('normal')} variant="default" disabled={!activeId}>
-                            Normal
-                        </Button>
-                        <Button onClick={() => sendCommand('faster')} variant="default" disabled={!activeId}>
-                            Faster
-                        </Button>
-                    </SimpleGrid>
-
-                    <Divider label="Toggles" my="xs" />
-                    <SimpleGrid cols={3}>
-                        <Button size="xs" variant={message?.loop ? 'filled' : 'default'} onClick={() => sendCommand('loop')} disabled={!activeId}>
-                            Loop
-                        </Button>
-                        <Button size="xs" variant={message?.repeat ? 'filled' : 'default'} onClick={() => sendCommand('repeat')} disabled={!activeId}>
-                            Repeat
-                        </Button>
-                        <Button size="xs" variant={message?.random ? 'filled' : 'default'} onClick={() => sendCommand('random')} disabled={!activeId}>
-                            Random
-                        </Button>
-                    </SimpleGrid>
-
-                    <Divider label="Custom command" my="xs" />
-                    <TextInput
-                        value={command}
-                        onChange={(e) => setCommand(e.currentTarget.value)}
-                        placeholder="e.g. volume 150"
-                        onKeyDown={(e) => e.key === 'Enter' && execButtonHandler()}
-                        disabled={!activeId}
-                    />
-                    <Button fullWidth onClick={execButtonHandler} loading={sending} disabled={!activeId}>
-                        Execute
-                    </Button>
-                </Stack>
+                    </Stack>
+                </ScrollArea>
             </AppShell.Navbar>
 
             {/* ---------------- Main: status dashboard ---------------- */}
@@ -742,6 +833,72 @@ export default function Home() {
                                     </>
                                 )}
                             </div>
+                        </Card>
+
+                        <Card withBorder>
+                            <Title order={5} mb="sm">
+                                Live Stream Controls
+                            </Title>
+                            <Grid align="flex-end">
+                                {/* Volume Slider & Mute */}
+                                <Grid.Col span={{ base: 12, md: 4 }}>
+                                    <Group gap="xs" align="flex-end">
+                                        <ActionIcon
+                                            variant="light"
+                                            size="lg"
+                                            onClick={handleMuteToggle}
+                                            color={isMuted ? 'red' : 'blue'}
+                                            style={{ marginBottom: 4 }}
+                                        >
+                                            {isMuted ? <IconVolumeOff size={18} /> : <IconVolume size={18} />}
+                                        </ActionIcon>
+                                        <div style={{ flex: 1 }}>
+                                            <Text size="xs" c="dimmed" mb={4}>Volume: {volume}%</Text>
+                                            <Slider
+                                                value={volume}
+                                                onChange={handleVolumeChange}
+                                                min={0}
+                                                max={150}
+                                                step={1}
+                                                label={(val) => `${val}%`}
+                                            />
+                                        </div>
+                                    </Group>
+                                </Grid.Col>
+
+                                {/* Audio Track Selector */}
+                                <Grid.Col span={{ base: 12, md: 4 }}>
+                                    <Select
+                                        label="Live Audio Track"
+                                        placeholder={activeAudioTracks.length === 0 ? "No audio tracks" : "Select audio track"}
+                                        value={activeAudioTrack !== null ? String(activeAudioTrack) : ''}
+                                        onChange={(val) => val && handleTrackChange('audio', Number(val))}
+                                        disabled={activeAudioTracks.length === 0}
+                                        data={activeAudioTracks.map((t) => ({
+                                            value: String(t.vlc_index),
+                                            label: `Track ${t.vlc_index} [${t.language.toUpperCase()}] (${t.title || t.codec})`,
+                                        }))}
+                                    />
+                                </Grid.Col>
+
+                                {/* Subtitle Track Selector */}
+                                <Grid.Col span={{ base: 12, md: 4 }}>
+                                    <Select
+                                        label="Live Subtitle Track"
+                                        placeholder="None / Disabled"
+                                        value={activeSubTrack !== null ? String(activeSubTrack) : 'none'}
+                                        onChange={(val) => handleTrackChange('subtitle', val === 'none' ? -1 : Number(val))}
+                                        disabled={activeSubTracks.length === 0}
+                                        data={[
+                                            { value: 'none', label: 'None / Disabled' },
+                                            ...activeSubTracks.map((t) => ({
+                                                value: String(t.vlc_index),
+                                                label: `Track ${t.vlc_index} [${t.language.toUpperCase()}] (${t.title || t.codec})`,
+                                            }))
+                                        ]}
+                                    />
+                                </Grid.Col>
+                            </Grid>
                         </Card>
 
                         <Grid>

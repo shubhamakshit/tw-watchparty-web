@@ -39,6 +39,14 @@ class APIManager {
         return `${APIManager.baseUrl}/vlc/${instanceId}/exec`;
     }
 
+    static VOLUME(instanceId: string, val: string): string {
+        return `${APIManager.baseUrl}/vlc/${instanceId}/volume?val=${encodeURIComponent(val)}`;
+    }
+
+    static TRACK(instanceId: string, type: string, val: number): string {
+        return `${APIManager.baseUrl}/vlc/${instanceId}/track?type=${encodeURIComponent(type)}&val=${val}`;
+    }
+
     static STATUS(instanceId: string): string {
         return `${APIManager.baseUrl}/vlc/${instanceId}/status`;
     }

@@ -463,6 +463,42 @@ async def instance_status(instance_id: str):
         return {"status": "error", "message": f"Could not connect to VLC HTTP interface. Error: {e}"}
 
 
+@app.post("/vlc/{instance_id}/volume")
+async def change_volume(instance_id: str, val: str):
+    inst = manager.get(instance_id)
+    if inst.process is None or inst.process.poll() is not None:
+        raise HTTPException(status_code=409, detail="Instance is not running")
+    try:
+        res = await asyncio.to_thread(
+            requests.get,
+            f"http://localhost:{inst.http_port}/requests/status.json?command=volume&val={val}",
+            auth=("", PASSWORD),
+            timeout=5,
+        )
+        return {"status": "success", "message": res.json()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to change volume: {e}")
+
+
+@app.post("/vlc/{instance_id}/track")
+async def change_track(instance_id: str, type: str, val: int):
+    inst = manager.get(instance_id)
+    if inst.process is None or inst.process.poll() is not None:
+        raise HTTPException(status_code=409, detail="Instance is not running")
+    
+    command = "audio_track" if type == "audio" else "subtitle_track"
+    try:
+        res = await asyncio.to_thread(
+            requests.get,
+            f"http://localhost:{inst.http_port}/requests/status.json?command={command}&val={val}",
+            auth=("", PASSWORD),
+            timeout=5,
+        )
+        return {"status": "success", "message": res.json()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to change track: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
     for inst in list(manager.instances.values()):
