@@ -8,10 +8,10 @@ import uuid
 from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse, unquote
 
 import telnetlib
 import requests
-import aria2p
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -28,70 +28,169 @@ TELNET_HOST = "localhost"
 VLC_EXECUTABLE = os.getenv("VLC_EXECUTABLE", "vlc")
 
 
-class Aria2Manager:
+class SimpleDownload:
+    def __init__(self, url: str):
+        self.gid = str(uuid.uuid4())[:16]
+        self.url = url
+        self.status = "waiting" # waiting, active, paused, complete, error, removed
+        self.total_length = 0
+        self.completed_length = 0
+        self.download_speed = 0
+        self.download_speed_str = "0 B/s"
+        self.eta = "—"
+        self.name = ""
+        self.error_message = ""
+        self.file_path = None
+        self._cancel_event = False
+        self._pause_event = False
+
+
+class InHouseDownloader:
     def __init__(self):
-        self.process = None
-        self.api = None
+        self.downloads = {} # gid -> SimpleDownload
+        self._tasks = {} # gid -> asyncio.Task
 
-    async def start(self):
-        # Try connecting first in case it's already running
-        try:
-            client = aria2p.Client(host="http://localhost", port=6800, secret="")
-            self.api = aria2p.API(client)
-            await asyncio.to_thread(self.api.get_version)
-            print("Connected to existing aria2c daemon.")
+    def get_downloads(self):
+        return list(self.downloads.values())
+
+    def get_download(self, gid: str):
+        return self.downloads.get(gid)
+
+    def add(self, url: str):
+        dl = SimpleDownload(url)
+        parsed = urlparse(url)
+        filename = os.path.basename(unquote(parsed.path))
+        if not filename:
+            filename = "download_" + dl.gid
+        
+        dl.name = filename
+        dl.file_path = BASE_MOVIES_DIR / filename
+        self.downloads[dl.gid] = dl
+        
+        # Start download task
+        self.resume(dl.gid)
+        return dl
+
+    def pause(self, gid: str):
+        dl = self.downloads.get(gid)
+        if dl and dl.status == "active":
+            dl.status = "paused"
+            dl._pause_event = True
+
+    def resume(self, gid: str):
+        dl = self.downloads.get(gid)
+        if not dl:
             return
-        except Exception:
-            pass
+        
+        dl.status = "active"
+        dl._pause_event = False
+        dl._cancel_event = False
+        
+        task = asyncio.create_task(self._download_loop(dl))
+        self._tasks[dl.gid] = task
 
-        # Start aria2c subprocess
-        print("Starting aria2c daemon...")
-        args = [
-            "aria2c",
-            "--enable-rpc=true",
-            "--rpc-listen-all=true",
-            "--rpc-allow-origin-all=true",
-            f"--dir={BASE_MOVIES_DIR}",
-            "--rpc-max-request-size=10M",
-            "--max-connection-per-server=16",
-            "--split=16",
-            "--min-split-size=1M",
-        ]
+    def remove(self, gid: str):
+        dl = self.downloads.get(gid)
+        if dl:
+            dl.status = "removed"
+            dl._cancel_event = True
+            if dl.file_path and dl.file_path.exists():
+                try:
+                    dl.file_path.unlink()
+                except Exception:
+                    pass
+            self.downloads.pop(gid, None)
+            self._tasks.pop(gid, None)
+
+    def autopurge(self):
+        to_purge = [gid for gid, dl in self.downloads.items() if dl.status in ("complete", "error", "removed")]
+        for gid in to_purge:
+            self.downloads.pop(gid, None)
+            self._tasks.pop(gid, None)
+
+    async def _download_loop(self, dl: SimpleDownload):
         try:
-            self.process = await asyncio.to_thread(
-                subprocess.Popen,
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            headers = {}
+            if dl.completed_length > 0:
+                headers["Range"] = f"bytes={dl.completed_length}-"
+
+            response = await asyncio.to_thread(
+                requests.get,
+                dl.url,
+                headers=headers,
+                stream=True,
+                timeout=15,
             )
-            print(f"Launched aria2c process. PID: {self.process.pid}")
+
+            if "content-disposition" in response.headers:
+                cd = response.headers["content-disposition"]
+                for part in cd.split(";"):
+                    if "filename=" in part:
+                        dl.name = part.split("=")[1].strip('"\'')
+                        dl.file_path = BASE_MOVIES_DIR / dl.name
+
+            is_resume = response.status_code == 206
+            if not is_resume and dl.completed_length > 0:
+                dl.completed_length = 0
+
+            if "content-length" in response.headers:
+                total_len = int(response.headers["content-length"])
+                dl.total_length = total_len + (dl.completed_length if is_resume else 0)
+            
+            mode = "ab" if (is_resume and dl.file_path.exists()) else "wb"
+            
+            start_time = time.time()
+            bytes_since_start = 0
+
+            with open(dl.file_path, mode) as f:
+                for chunk in response.iter_content(chunk_size=128 * 1024):
+                    if dl._cancel_event or dl.status == "removed":
+                        return
+                    if dl._pause_event or dl.status == "paused":
+                        return
+                    
+                    if chunk:
+                        f.write(chunk)
+                        dl.completed_length += len(chunk)
+                        bytes_since_start += len(chunk)
+                        
+                        elapsed = time.time() - start_time
+                        if elapsed > 0.5:
+                            dl.download_speed = bytes_since_start / elapsed
+                            speed = dl.download_speed
+                            if speed >= 1024**2:
+                                dl.download_speed_str = f"{speed / 1024**2:.2f} MB/s"
+                            elif speed >= 1024:
+                                dl.download_speed_str = f"{speed / 1024:.2f} KB/s"
+                            else:
+                                dl.download_speed_str = f"{speed:.2f} B/s"
+                            
+                            remaining = dl.total_length - dl.completed_length
+                            if remaining > 0 and dl.download_speed > 0:
+                                eta_secs = int(remaining / dl.download_speed)
+                                if eta_secs >= 3600:
+                                    dl.eta = f"{eta_secs // 3600}h {(eta_secs % 3600) // 60}m"
+                                elif eta_secs >= 60:
+                                    dl.eta = f"{eta_secs // 60}m {eta_secs % 60}s"
+                                else:
+                                    dl.eta = f"{eta_secs}s"
+                            else:
+                                dl.eta = "0s"
+                        
+                        await asyncio.sleep(0.001)
+
+            dl.status = "complete"
+            dl.download_speed_str = "0 B/s"
+            dl.eta = "done"
+
         except Exception as e:
-            print(f"Failed to start aria2c: {e}")
-            return
-
-        # Wait for RPC interface to become ready
-        client = aria2p.Client(host="http://localhost", port=6800, secret="")
-        self.api = aria2p.API(client)
-        for _ in range(30):
-            try:
-                await asyncio.to_thread(self.api.get_version)
-                print("aria2c daemon is ready.")
-                break
-            except Exception:
-                await asyncio.sleep(0.5)
-
-    def stop(self):
-        if self.process and self.process.poll() is None:
-            print("Stopping aria2c process...")
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-            print("aria2c process stopped.")
+            dl.status = "error"
+            dl.error_message = str(e)
+            dl.download_speed_str = "0 B/s"
+            dl.eta = "—"
 
 
-aria2_manager = Aria2Manager()
+aria2_manager = InHouseDownloader()
 
 app = FastAPI(title="VLC Control API", debug=True)
 
@@ -639,17 +738,10 @@ async def change_track(instance_id: str, type: str, val: int):
 
 # ---------------- Aria2 / Explorer API routes ----------------
 
-@app.on_event("startup")
-async def startup_event():
-    await aria2_manager.start()
-
-
 @app.get("/aria2/downloads")
 async def get_downloads():
-    if not aria2_manager.api:
-        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
     try:
-        downloads = await asyncio.to_thread(aria2_manager.api.get_downloads)
+        downloads = aria2_manager.get_downloads()
         results = []
         for dl in downloads:
             total = dl.total_length
@@ -664,9 +756,9 @@ async def get_downloads():
                 "completed_length": completed,
                 "progress": round(pct, 2),
                 "download_speed": dl.download_speed,
-                "download_speed_str": dl.download_speed_string(),
-                "eta": dl.eta_string(),
-                "files": [str(f.path) for f in dl.files],
+                "download_speed_str": dl.download_speed_str,
+                "eta": dl.eta,
+                "files": [str(dl.file_path)] if dl.file_path else [],
                 "error_message": dl.error_message
             })
         return {"status": "success", "downloads": results}
@@ -676,15 +768,8 @@ async def get_downloads():
 
 @app.post("/aria2/add")
 async def add_download(req: AddDownloadRequest):
-    if not aria2_manager.api:
-        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
     try:
-        if req.uri.startswith("magnet:"):
-            dl = await asyncio.to_thread(aria2_manager.api.add_magnet, req.uri)
-        elif req.uri.endswith(".torrent") and not req.uri.startswith("http"):
-            dl = await asyncio.to_thread(aria2_manager.api.add_torrent, req.uri)
-        else:
-            dl = await asyncio.to_thread(aria2_manager.api.add_uris, [req.uri])
+        dl = aria2_manager.add(req.uri)
         return {"status": "success", "gid": dl.gid}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to add download: {e}")
@@ -692,11 +777,8 @@ async def add_download(req: AddDownloadRequest):
 
 @app.post("/aria2/pause/{gid}")
 async def pause_download(gid: str):
-    if not aria2_manager.api:
-        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
     try:
-        dl = await asyncio.to_thread(aria2_manager.api.get_download, gid)
-        await asyncio.to_thread(dl.pause)
+        aria2_manager.pause(gid)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -704,11 +786,8 @@ async def pause_download(gid: str):
 
 @app.post("/aria2/resume/{gid}")
 async def resume_download(gid: str):
-    if not aria2_manager.api:
-        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
     try:
-        dl = await asyncio.to_thread(aria2_manager.api.get_download, gid)
-        await asyncio.to_thread(dl.resume)
+        aria2_manager.resume(gid)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -716,11 +795,8 @@ async def resume_download(gid: str):
 
 @app.post("/aria2/remove/{gid}")
 async def remove_download(gid: str):
-    if not aria2_manager.api:
-        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
     try:
-        dl = await asyncio.to_thread(aria2_manager.api.get_download, gid)
-        await asyncio.to_thread(dl.remove, force=True)
+        aria2_manager.remove(gid)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -728,10 +804,8 @@ async def remove_download(gid: str):
 
 @app.post("/aria2/purge")
 async def purge_downloads():
-    if not aria2_manager.api:
-        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
     try:
-        await asyncio.to_thread(aria2_manager.api.autopurge)
+        aria2_manager.autopurge()
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -814,7 +888,8 @@ async def explorer_delete(req: DeleteFileRequest):
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    aria2_manager.stop()
+    for task in list(aria2_manager._tasks.values()):
+        task.cancel()
     for inst in list(manager.instances.values()):
         if inst.process and inst.process.poll() is None:
             try:
