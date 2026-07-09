@@ -24,6 +24,8 @@ import {
     Alert,
     AppShell,
     useMantineColorScheme,
+    Image,
+    LoadingOverlay,
 } from '@mantine/core';
 import {
     IconArrowLeft,
@@ -40,6 +42,9 @@ import {
     IconAlertCircle,
     IconCheck,
     IconSettings,
+    IconSearch,
+    IconMovie,
+    IconDeviceTv,
 } from '@tabler/icons-react';
 import APIManager from '@/api/Api';
 
@@ -91,6 +96,143 @@ export default function MediaManager() {
     const [settingsError, setSettingsError] = useState<string | null>(null);
     const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
     const [applyingSettings, setApplyingSettings] = useState(false);
+
+    // Acer Scraper state
+    const [scraperSearchQuery, setScraperSearchQuery] = useState('');
+    const [scraperResults, setScraperResults] = useState<any[]>([]);
+    const [searchingScraper, setSearchingScraper] = useState(false);
+    const [scraperError, setScraperError] = useState<string | null>(null);
+    const [selectedMovie, setSelectedMovie] = useState<any | null>(null);
+    const [qualities, setQualities] = useState<any[]>([]);
+    const [fetchingQualities, setFetchingQualities] = useState(false);
+    const [episodes, setEpisodes] = useState<any[]>([]);
+    const [fetchingEpisodes, setFetchingEpisodes] = useState(false);
+    const [selectedSeasonLabel, setSelectedSeasonLabel] = useState('');
+    const [queuingGid, setQueuingGid] = useState<string | null>(null);
+    const [queuingAll, setQueuingAll] = useState(false);
+
+    const handleScraperSearch = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!scraperSearchQuery.trim()) return;
+
+        setSearchingScraper(true);
+        setScraperError(null);
+        setSelectedMovie(null);
+        setQualities([]);
+        setEpisodes([]);
+
+        fetch(APIManager.ACER_SEARCH(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: scraperSearchQuery.trim() }),
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Search failed');
+                setScraperResults(data.searchResult || []);
+            })
+            .catch((err) => setScraperError(err.message || String(err)))
+            .finally(() => setSearchingScraper(false));
+    };
+
+    const handleFetchQualities = (result: any) => {
+        setFetchingQualities(true);
+        setScraperError(null);
+        setSelectedMovie(result);
+        setQualities([]);
+        setEpisodes([]);
+
+        fetch(APIManager.ACER_QUALITIES(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: result.url }),
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to fetch qualities');
+                setQualities(data.sourceQualityList || []);
+                if (data.meta) {
+                    setSelectedMovie((prev: any) => ({
+                        ...prev,
+                        image: data.meta.image || prev.image,
+                        synopsis: data.meta.synopsis,
+                        type: data.meta.type,
+                    }));
+                }
+            })
+            .catch((err) => setScraperError(err.message || String(err)))
+            .finally(() => setFetchingQualities(false));
+    };
+
+    const handleFetchEpisodes = (quality: any) => {
+        setFetchingEpisodes(true);
+        setScraperError(null);
+        setSelectedSeasonLabel(quality.title || '');
+        setEpisodes([]);
+
+        fetch(APIManager.ACER_EPISODES(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: quality.episodes_api_url }),
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to fetch episodes');
+                setEpisodes(data.sourceEpisodes || []);
+            })
+            .catch((err) => setScraperError(err.message || String(err)))
+            .finally(() => setFetchingEpisodes(false));
+    };
+
+    const handleQueueScraperDownload = (url: string, filename: string, seriesType: string) => {
+        setQueuingGid(url);
+        setScraperError(null);
+
+        return fetch(APIManager.ACER_DOWNLOAD(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                url,
+                filename,
+                series_type: seriesType,
+            }),
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to queue download');
+                fetchDownloads();
+                return data;
+            })
+            .catch((err) => {
+                setScraperError(err.message || String(err));
+                throw err;
+            })
+            .finally(() => setQueuingGid(null));
+    };
+
+    const handleQueueAllEpisodes = async () => {
+        if (!episodes || episodes.length === 0 || !selectedMovie) return;
+        setQueuingAll(true);
+        let successCount = 0;
+        
+        try {
+            for (let i = 0; i < episodes.length; i++) {
+                const ep = episodes[i];
+                const cleanShowTitle = selectedMovie.title || 'Series';
+                const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title || `Episode_${i+1}`}.mp4`;
+                try {
+                    await handleQueueScraperDownload(ep.url, filename, 'episode');
+                    successCount++;
+                    await new Promise((r) => setTimeout(r, 400));
+                } catch (e) {
+                    console.error("Failed to queue episode:", ep.title, e);
+                }
+            }
+            alert(`Queued ${successCount} episodes successfully!`);
+        } finally {
+            setQueuingAll(false);
+        }
+    };
 
     const downloadsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -304,6 +446,9 @@ export default function MediaManager() {
                             </Tabs.Tab>
                             <Tabs.Tab value="explorer" leftSection={<IconFolder size={16} />}>
                                 File Explorer
+                            </Tabs.Tab>
+                            <Tabs.Tab value="scraper" leftSection={<IconSearch size={16} />}>
+                                Search & Scrape
                             </Tabs.Tab>
                             <Tabs.Tab value="settings" leftSection={<IconSettings size={16} />}>
                                 Settings
@@ -579,6 +724,229 @@ export default function MediaManager() {
                                         </Table>
                                     )}
                                 </Card>
+                            </Stack>
+                        </Tabs.Panel>
+
+                        {/* ==================== Search & Scrape Tab ==================== */}
+                        <Tabs.Panel value="scraper">
+                            <Stack gap="md" style={{ position: 'relative' }}>
+                                <LoadingOverlay visible={searchingScraper || fetchingQualities || fetchingEpisodes} />
+
+                                {scraperError && (
+                                    <Alert
+                                        icon={<IconAlertCircle size={16} />}
+                                        title="Scraper Error"
+                                        color="red"
+                                        withCloseButton
+                                        onClose={() => setScraperError(null)}
+                                    >
+                                        {scraperError}
+                                    </Alert>
+                                )}
+
+                                <Card withBorder>
+                                    <form onSubmit={handleScraperSearch}>
+                                        <Group align="flex-end">
+                                            <TextInput
+                                                label="Search Movies & TV Shows (via acermovies)"
+                                                placeholder="e.g. Breaking Bad, Interstellar..."
+                                                value={scraperSearchQuery}
+                                                onChange={(e) => setScraperSearchQuery(e.currentTarget.value)}
+                                                style={{ flex: 1 }}
+                                                required
+                                            />
+                                            <Button
+                                                type="submit"
+                                                loading={searchingScraper}
+                                                leftSection={<IconSearch size={16} />}
+                                            >
+                                                Search
+                                            </Button>
+                                        </Group>
+                                    </form>
+                                </Card>
+
+                                <SimpleGrid cols={{ base: 1, md: selectedMovie ? 2 : 1 }} spacing="md">
+                                    {/* Search Results Column */}
+                                    <Card withBorder>
+                                        <Title order={5} mb="md">
+                                            Search Results ({scraperResults.length})
+                                        </Title>
+                                        {scraperResults.length === 0 ? (
+                                            <Text c="dimmed" ta="center" py="xl">
+                                                Search for a title above to find movies and shows to download.
+                                            </Text>
+                                        ) : (
+                                            <Stack gap="xs" style={{ maxHeight: '500px', overflowY: 'auto' }}>
+                                                {scraperResults.map((result, idx) => (
+                                                    <Card
+                                                        key={idx}
+                                                        withBorder
+                                                        padding="sm"
+                                                        style={{
+                                                            cursor: 'pointer',
+                                                            backgroundColor: selectedMovie?.url === result.url ? 'var(--mantine-color-blue-light)' : 'transparent',
+                                                        }}
+                                                        onClick={() => handleFetchQualities(result)}
+                                                    >
+                                                        <Group justify="space-between">
+                                                            <Group gap="sm" style={{ flex: 1, marginRight: '10px' }}>
+                                                                {result.image && (
+                                                                    <Image
+                                                                        src={result.image}
+                                                                        w={40}
+                                                                        h={60}
+                                                                        fallbackSrc="https://placehold.co/40x60?text=No+Poster"
+                                                                        radius="xs"
+                                                                    />
+                                                                )}
+                                                                <Stack gap={2} style={{ flex: 1 }}>
+                                                                    <Text size="sm" fw={600} truncate>
+                                                                        {result.title}
+                                                                    </Text>
+                                                                    <Text size="xs" c="dimmed" lineClamp={2}>
+                                                                        {result.description || 'No description'}
+                                                                    </Text>
+                                                                </Stack>
+                                                            </Group>
+                                                            <Button size="xs" variant="light" leftSection={<IconPlus size={12} />}>
+                                                                Fetch
+                                                            </Button>
+                                                        </Group>
+                                                    </Card>
+                                                ))}
+                                            </Stack>
+                                        )}
+                                    </Card>
+
+                                    {/* Qualities & Episodes Details Column */}
+                                    {selectedMovie && (
+                                        <Card withBorder>
+                                            <Group align="flex-start" mb="md" gap="md" wrap="nowrap">
+                                                {selectedMovie.image && (
+                                                    <Image
+                                                        src={selectedMovie.image}
+                                                        w={90}
+                                                        h={130}
+                                                        fallbackSrc="https://placehold.co/90x130?text=No+Poster"
+                                                        radius="sm"
+                                                    />
+                                                )}
+                                                <Stack gap="xs" style={{ flex: 1 }}>
+                                                    <Title order={4}>{selectedMovie.title}</Title>
+                                                    {selectedMovie.type && (
+                                                        <Badge color="blue" variant="light" style={{ alignSelf: 'flex-start' }}>
+                                                            {selectedMovie.type}
+                                                        </Badge>
+                                                    )}
+                                                    {selectedMovie.synopsis && (
+                                                        <Text size="xs" c="dimmed" lineClamp={4}>
+                                                            {selectedMovie.synopsis}
+                                                        </Text>
+                                                    )}
+                                                </Stack>
+                                            </Group>
+
+                                            <Divider mb="md" />
+
+                                            {/* Qualities / Seasons selection */}
+                                            <Title order={5} mb="sm">
+                                                Available Sources / Seasons
+                                            </Title>
+                                            {qualities.length === 0 ? (
+                                                <Text c="dimmed" size="xs" mb="md">
+                                                    No source qualities found.
+                                                </Text>
+                                            ) : (
+                                                <Group gap="xs" mb="md">
+                                                    {qualities.map((q, idx) => {
+                                                        const isTvSeason = q.episodes_api_url;
+                                                        const isSelectedSeason = selectedSeasonLabel === q.title;
+
+                                                        return (
+                                                            <Button
+                                                                key={idx}
+                                                                size="xs"
+                                                                variant={isSelectedSeason ? 'filled' : 'outline'}
+                                                                onClick={() => {
+                                                                    if (isTvSeason) {
+                                                                        handleFetchEpisodes(q);
+                                                                    } else {
+                                                                        const cleanMovieTitle = selectedMovie.title || 'Movie';
+                                                                        const qualityLabel = q.quality || 'Direct';
+                                                                        const filename = `${cleanMovieTitle}_${qualityLabel}.mp4`;
+                                                                        handleQueueScraperDownload(q.url, filename, 'movie')
+                                                                            .then(() => alert(`Queued movie: ${filename}`))
+                                                                            .catch(() => {});
+                                                                    }
+                                                                }}
+                                                                loading={queuingGid === q.url}
+                                                            >
+                                                                {q.quality || q.title || `Quality ${idx+1}`}
+                                                            </Button>
+                                                        );
+                                                    })}
+                                                </Group>
+                                            )}
+
+                                            {/* Episodes list */}
+                                            {episodes.length > 0 && (
+                                                <Stack gap="sm">
+                                                    <Group justify="space-between">
+                                                        <Title order={5}>
+                                                            Episodes ({episodes.length})
+                                                        </Title>
+                                                        <Button
+                                                            size="xs"
+                                                            color="green"
+                                                            onClick={handleQueueAllEpisodes}
+                                                            loading={queuingAll}
+                                                        >
+                                                            Bulk Download All
+                                                        </Button>
+                                                    </Group>
+                                                    <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                                                        <Table striped highlightOnHover verticalSpacing="xs">
+                                                            <Table.Thead>
+                                                                <Table.Tr>
+                                                                    <Table.Th>Episode Name</Table.Th>
+                                                                    <Table.Th style={{ width: '120px' }}>Actions</Table.Th>
+                                                                </Table.Tr>
+                                                            </Table.Thead>
+                                                            <Table.Tbody>
+                                                                {episodes.map((ep, idx) => (
+                                                                    <Table.Tr key={idx}>
+                                                                        <Table.Td>
+                                                                            <Text size="xs" fw={500}>
+                                                                                {ep.title}
+                                                                            </Text>
+                                                                        </Table.Td>
+                                                                        <Table.Td>
+                                                                            <Button
+                                                                                size="xs"
+                                                                                variant="light"
+                                                                                onClick={() => {
+                                                                                    const cleanShowTitle = selectedMovie.title || 'Series';
+                                                                                    const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title}.mp4`;
+                                                                                    handleQueueScraperDownload(ep.url, filename, 'episode')
+                                                                                        .then(() => alert(`Queued episode: ${filename}`))
+                                                                                        .catch(() => {});
+                                                                                }}
+                                                                                loading={queuingGid === ep.url}
+                                                                            >
+                                                                                Queue
+                                                                            </Button>
+                                                                        </Table.Td>
+                                                                    </Table.Tr>
+                                                                ))}
+                                                            </Table.Tbody>
+                                                        </Table>
+                                                    </div>
+                                                </Stack>
+                                            )}
+                                        </Card>
+                                    )}
+                                </SimpleGrid>
                             </Stack>
                         </Tabs.Panel>
 

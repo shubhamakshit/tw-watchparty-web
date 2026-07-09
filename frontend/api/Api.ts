@@ -110,6 +110,24 @@ class APIManager {
     static UPDATE_CONFIG(): string {
         return `${APIManager.baseUrl}/config`;
     }
+
+    // ---- Acer Scraper ----
+
+    static ACER_SEARCH(): string {
+        return `${APIManager.baseUrl}/acer/search`;
+    }
+
+    static ACER_QUALITIES(): string {
+        return `${APIManager.baseUrl}/acer/qualities`;
+    }
+
+    static ACER_EPISODES(): string {
+        return `${APIManager.baseUrl}/acer/episodes`;
+    }
+
+    static ACER_DOWNLOAD(): string {
+        return `${APIManager.baseUrl}/acer/download`;
+    }
 }
 
 export default APIManager;

@@ -9,6 +9,8 @@ from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse, unquote
+import re
+import unicodedata
 
 import telnetlib
 import requests
@@ -257,6 +259,40 @@ class DeleteFileRequest(BaseModel):
 class UpdateConfigRequest(BaseModel):
     movies_dir: str
     create_if_missing: bool = True
+
+
+class SearchRequest(BaseModel):
+    query: str
+
+
+class SourceQualityRequest(BaseModel):
+    url: str
+
+
+class SourceEpisodesRequest(BaseModel):
+    url: str
+
+
+class AcerDownloadRequest(BaseModel):
+    url: str
+    filename: str
+    series_type: str = "episode"
+
+
+def sanitize_filename(filename):
+    normalized = unicodedata.normalize('NFKD', filename).encode('ascii', 'ignore').decode('ascii')
+    sanitized = re.sub(r'[\\/*?:"<>|]', "", normalized)
+    sanitized = sanitized.replace(' ', '_')
+    sanitized = re.sub(r'_+', '_', sanitized).strip('._')
+    if not sanitized:
+        return 'download'
+    stem, ext = os.path.splitext(sanitized)
+    max_length = 180
+    if len(sanitized) <= max_length:
+        return sanitized
+    allowed_stem_length = max_length - len(ext)
+    shortened_stem = stem[:allowed_stem_length].rstrip('._')
+    return f"{shortened_stem}{ext}" if shortened_stem else f"download{ext}"
 
 
 # ---------------- VLC instance / manager ----------------
@@ -812,6 +848,92 @@ async def purge_downloads():
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------- Acer Scraper APIs ----------------
+
+API_BASE_URL = 'https://api2.acermovies.fun/api'
+DEFAULT_HEADERS = {"Content-Type": "application/json", "Accept": "application/json"}
+
+
+@app.post("/acer/search")
+async def acer_search(req: SearchRequest):
+    try:
+        res = await asyncio.to_thread(
+            requests.post,
+            f"{API_BASE_URL}/search",
+            headers=DEFAULT_HEADERS,
+            json={"searchQuery": req.query},
+            timeout=10
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+
+
+@app.post("/acer/qualities")
+async def acer_qualities(req: SourceQualityRequest):
+    try:
+        res = await asyncio.to_thread(
+            requests.post,
+            f"{API_BASE_URL}/sourceQuality",
+            headers=DEFAULT_HEADERS,
+            json={"url": req.url},
+            timeout=10
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch qualities: {e}")
+
+
+@app.post("/acer/episodes")
+async def acer_episodes(req: SourceEpisodesRequest):
+    try:
+        res = await asyncio.to_thread(
+            requests.post,
+            f"{API_BASE_URL}/sourceEpisodes",
+            headers=DEFAULT_HEADERS,
+            json={"url": req.url},
+            timeout=10
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch episodes: {e}")
+
+
+@app.post("/acer/download")
+async def acer_download(req: AcerDownloadRequest):
+    try:
+        # 1. Resolve sourceUrl
+        res = await asyncio.to_thread(
+            requests.post,
+            f"{API_BASE_URL}/sourceUrl",
+            headers=DEFAULT_HEADERS,
+            json={"url": req.url, "seriesType": req.series_type},
+            timeout=15
+        )
+        res.raise_for_status()
+        data = res.json()
+        direct_url = data.get("sourceUrl")
+        if not direct_url:
+            raise HTTPException(status_code=400, detail="Could not resolve download URL")
+
+        # Decode URL
+        direct_url = unquote(direct_url)
+
+        # 2. Add to downloader
+        dl = aria2_manager.add(direct_url)
+        if req.filename:
+            sanitized = sanitize_filename(req.filename)
+            dl.name = sanitized
+            dl.file_path = BASE_MOVIES_DIR / sanitized
+            
+        return {"status": "success", "gid": dl.gid, "filename": dl.name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download queue failed: {e}")
 
 
 @app.get("/config")
