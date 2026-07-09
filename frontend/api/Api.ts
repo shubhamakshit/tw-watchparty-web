@@ -100,6 +100,16 @@ class APIManager {
     static EXPLORER_DELETE(): string {
         return `${APIManager.baseUrl}/explorer/delete`;
     }
+
+    // ---- Server Config ----
+
+    static GET_CONFIG(): string {
+        return `${APIManager.baseUrl}/config`;
+    }
+
+    static UPDATE_CONFIG(): string {
+        return `${APIManager.baseUrl}/config`;
+    }
 }
 
 export default APIManager;

@@ -5,6 +5,7 @@ import {
     Container,
     Card,
     Stack,
+    Switch,
     Group,
     Title,
     Text,
@@ -38,6 +39,7 @@ import {
     IconSun,
     IconAlertCircle,
     IconCheck,
+    IconSettings,
 } from '@tabler/icons-react';
 import APIManager from '@/api/Api';
 
@@ -81,7 +83,28 @@ export default function MediaManager() {
     const [explorerError, setExplorerError] = useState<string | null>(null);
     const [deletingPath, setDeletingPath] = useState<string | null>(null);
 
+    // Settings state
+    const [defaultMoviesDir, setDefaultMoviesDir] = useState('');
+    const [currentMoviesDir, setCurrentMoviesDir] = useState('');
+    const [newMoviesDir, setNewMoviesDir] = useState('');
+    const [createIfMissing, setCreateIfMissing] = useState(true);
+    const [settingsError, setSettingsError] = useState<string | null>(null);
+    const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
+    const [applyingSettings, setApplyingSettings] = useState(false);
+
     const downloadsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // Fetch config
+    const fetchConfig = () => {
+        fetch(APIManager.GET_CONFIG())
+            .then((res) => res.json())
+            .then((data) => {
+                setDefaultMoviesDir(data.default_movies_dir);
+                setCurrentMoviesDir(data.current_movies_dir);
+                setNewMoviesDir(data.current_movies_dir);
+            })
+            .catch(() => {});
+    };
 
     // Fetch aria2 downloads
     const fetchDownloads = () => {
@@ -120,11 +143,40 @@ export default function MediaManager() {
     useEffect(() => {
         fetchDownloads();
         fetchExplorer('');
+        fetchConfig();
         downloadsIntervalRef.current = setInterval(fetchDownloads, 2000);
         return () => {
             if (downloadsIntervalRef.current) clearInterval(downloadsIntervalRef.current);
         };
     }, []);
+
+    const handleApplyConfig = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newMoviesDir.trim()) return;
+
+        setApplyingSettings(true);
+        setSettingsError(null);
+        setSettingsSuccess(null);
+
+        fetch(APIManager.UPDATE_CONFIG(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                movies_dir: newMoviesDir.trim(),
+                create_if_missing: createIfMissing,
+            }),
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data?.detail ?? 'Failed to update folder');
+                setSettingsSuccess('Download directory updated successfully!');
+                setCurrentMoviesDir(data.current_movies_dir);
+                setNewMoviesDir(data.current_movies_dir);
+                fetchExplorer('');
+            })
+            .catch((err) => setSettingsError(err.message || String(err)))
+            .finally(() => setApplyingSettings(false));
+    };
 
     const handleAddDownload = (e: React.FormEvent) => {
         e.preventDefault();
@@ -248,10 +300,13 @@ export default function MediaManager() {
                     <Tabs defaultValue="downloader" variant="outline">
                         <Tabs.List mb="md">
                             <Tabs.Tab value="downloader" leftSection={<IconDownload size={16} />}>
-                                Downloader (aria2)
+                                Downloader
                             </Tabs.Tab>
                             <Tabs.Tab value="explorer" leftSection={<IconFolder size={16} />}>
                                 File Explorer
+                            </Tabs.Tab>
+                            <Tabs.Tab value="settings" leftSection={<IconSettings size={16} />}>
+                                Settings
                             </Tabs.Tab>
                         </Tabs.List>
 
@@ -523,6 +578,99 @@ export default function MediaManager() {
                                             </Table.Tbody>
                                         </Table>
                                     )}
+                                </Card>
+                            </Stack>
+                        </Tabs.Panel>
+
+                        {/* ==================== Settings Tab ==================== */}
+                        <Tabs.Panel value="settings">
+                            <Stack gap="md">
+                                {settingsError && (
+                                    <Alert
+                                        icon={<IconAlertCircle size={16} />}
+                                        title="Settings Error"
+                                        color="red"
+                                        withCloseButton
+                                        onClose={() => setSettingsError(null)}
+                                    >
+                                        {settingsError}
+                                    </Alert>
+                                )}
+
+                                {settingsSuccess && (
+                                    <Alert
+                                        icon={<IconCheck size={16} />}
+                                        title="Success"
+                                        color="green"
+                                        withCloseButton
+                                        onClose={() => setSettingsSuccess(null)}
+                                    >
+                                        {settingsSuccess}
+                                    </Alert>
+                                )}
+
+                                <Card withBorder>
+                                    <Title order={5} mb="xs">
+                                        Directory Configuration
+                                    </Title>
+                                    <Text size="sm" c="dimmed" mb="md">
+                                        View and change the active directory used by the file explorer and downloader. Changes apply to the current server session.
+                                    </Text>
+
+                                    <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md" mb="md">
+                                        <Card withBorder padding="sm" bg="var(--mantine-color-default-hover)">
+                                            <Text size="xs" fw={700} c="dimmed" style={{ textTransform: 'uppercase' }}>
+                                                Default Movies Folder
+                                            </Text>
+                                            <Text size="md" fw={500} style={{ fontFamily: 'monospace' }} mt={4}>
+                                                {defaultMoviesDir || '—'}
+                                            </Text>
+                                        </Card>
+                                        <Card withBorder padding="sm" bg="var(--mantine-color-default-hover)">
+                                            <Text size="xs" fw={700} c="dimmed" style={{ textTransform: 'uppercase' }}>
+                                                Current Active Folder
+                                            </Text>
+                                            <Text size="md" fw={500} style={{ fontFamily: 'monospace' }} mt={4}>
+                                                {currentMoviesDir || '—'}
+                                            </Text>
+                                        </Card>
+                                    </SimpleGrid>
+
+                                    <form onSubmit={handleApplyConfig}>
+                                        <Stack gap="sm">
+                                            <TextInput
+                                                label="Change Download & Stream Folder"
+                                                description="Specify an absolute path on the server (e.g. ~/Downloads/WatchParty or C:\Downloads\WatchParty)"
+                                                placeholder={currentMoviesDir}
+                                                value={newMoviesDir}
+                                                onChange={(e) => setNewMoviesDir(e.currentTarget.value)}
+                                                required
+                                            />
+                                            <Switch
+                                                label="Create folder automatically if it does not exist"
+                                                checked={createIfMissing}
+                                                onChange={(e) => setCreateIfMissing(e.currentTarget.checked)}
+                                            />
+                                            <Button
+                                                type="submit"
+                                                loading={applyingSettings}
+                                                style={{ alignSelf: 'flex-start' }}
+                                            >
+                                                Apply & Update Path
+                                            </Button>
+                                        </Stack>
+                                    </form>
+                                </Card>
+
+                                <Card withBorder>
+                                    <Title order={5} mb="xs">
+                                        Preferences & Guide
+                                    </Title>
+                                    <Text size="sm" c="dimmed">
+                                        * **Storage Location**: Completed downloads in the downloader tab are placed directly in the active folder configured above.
+                                        * **Streaming Root**: The File Explorer searches recursively inside the active folder. Any files shown can be streamed instantly using the green **Play** action.
+                                        * **System Port bindings**: VLC instance HTTP interfaces, telnet controls, and media stream ports are automatically allocated.
+                                    </Text>
                                 </Card>
                             </Stack>
                         </Tabs.Panel>

@@ -254,6 +254,11 @@ class DeleteFileRequest(BaseModel):
     path: str
 
 
+class UpdateConfigRequest(BaseModel):
+    movies_dir: str
+    create_if_missing: bool = True
+
+
 # ---------------- VLC instance / manager ----------------
 
 class VLCInstance:
@@ -807,6 +812,37 @@ async def purge_downloads():
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/config")
+async def get_config():
+    return {
+        "status": "success",
+        "default_movies_dir": str(default_movies_dir),
+        "current_movies_dir": str(BASE_MOVIES_DIR),
+    }
+
+
+@app.post("/config")
+async def update_config(req: UpdateConfigRequest):
+    global BASE_MOVIES_DIR
+    target = Path(req.movies_dir).expanduser().resolve()
+    
+    if not target.exists():
+        if req.create_if_missing:
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to create directory: {e}")
+        else:
+            raise HTTPException(status_code=400, detail="Directory does not exist")
+            
+    BASE_MOVIES_DIR = target
+    return {
+        "status": "success",
+        "current_movies_dir": str(BASE_MOVIES_DIR),
+        "message": f"Updated active movies directory to {BASE_MOVIES_DIR}"
+    }
 
 
 @app.get("/explorer")
