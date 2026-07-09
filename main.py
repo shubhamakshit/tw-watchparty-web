@@ -853,7 +853,20 @@ async def purge_downloads():
 # ---------------- Acer Scraper APIs ----------------
 
 API_BASE_URL = 'https://api2.acermovies.fun/api'
-DEFAULT_HEADERS = {"Content-Type": "application/json", "Accept": "application/json"}
+DEFAULT_HEADERS = {
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/json",
+    "Origin": "https://acermovies.fun",
+    "Referer": "https://acermovies.fun/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Microsoft Edge";v="150"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site"
+}
 
 
 @app.post("/acer/search")
