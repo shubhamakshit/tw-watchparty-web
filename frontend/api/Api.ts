@@ -9,6 +9,10 @@ class APIManager {
         return `${APIManager.baseUrl}/vlc/start`;
     }
 
+    static RECONFIGURE(instanceId: string): string {
+        return `${APIManager.baseUrl}/vlc/${instanceId}/reconfigure`;
+    }
+
     static LIST_INSTANCES(): string {
         return `${APIManager.baseUrl}/vlc/instances`;
     }

@@ -43,6 +43,25 @@ import APIManager from '@/api/Api';
 
 // ---------- Types ----------
 
+export interface StartVLCRequest {
+    video_path: string;
+    stream_key?: string | null;
+    rtmp_url?: string | null;
+    loop: boolean;
+    video_bitrate: number;
+    audio_bitrate: number;
+    fps: number;
+    name?: string | null;
+    audio_track?: number | null;
+    sub_track?: number | null;
+    scale: string;
+    vcodec: string;
+    acodec: string;
+    samplerate: number;
+    preset: string;
+    keyint: number;
+}
+
 export interface InstanceInfo {
     id: string;
     name: string;
@@ -53,6 +72,7 @@ export interface InstanceInfo {
     status: string;
     started_at: number | null;
     returncode: number | null;
+    start_req?: StartVLCRequest | null;
 }
 
 export type ExecuteResponse = {
@@ -166,12 +186,96 @@ export default function Home() {
     const [streamKey, setStreamKey] = useState('');
     const [rtmpUrl, setRtmpUrl] = useState('');
     const [loop, setLoop] = useState(true);
-    const [videoBitrate, setVideoBitrate] = useState<number>(2000);
+    const [videoBitrate, setVideoBitrate] = useState<number>(3000); // default to 3000
     const [audioBitrate, setAudioBitrate] = useState<number>(128);
-    const [fps, setFps] = useState<number>(30);
+    const [fps, setFps] = useState<number>(60); // default to 60
+    const [scale, setScale] = useState('Auto');
+    const [vcodec, setVcodec] = useState('h264');
+    const [acodec, setAcodec] = useState('mp4a');
+    const [samplerate, setSamplerate] = useState<number>(44100);
+    const [preset, setPreset] = useState('veryfast');
+    const [keyint, setKeyint] = useState<number>(60);
+    const [showAdvanced, setShowAdvanced] = useState(false);
+    const [isReconfiguring, setIsReconfiguring] = useState(false);
+    const [shouldAutoSelectTracks, setShouldAutoSelectTracks] = useState(true);
+
     const [instanceName, setInstanceName] = useState('');
     const [starting, setStarting] = useState(false);
     const [startError, setStartError] = useState<string | null>(null);
+
+    const populateForm = (req: StartVLCRequest) => {
+        setVideoPath(req.video_path);
+        setStreamKey(req.stream_key || '');
+        setRtmpUrl(req.rtmp_url || '');
+        setLoop(req.loop);
+        setVideoBitrate(req.video_bitrate);
+        setAudioBitrate(req.audio_bitrate);
+        setFps(req.fps);
+        setScale(req.scale || 'Auto');
+        setVcodec(req.vcodec || 'h264');
+        setAcodec(req.acodec || 'mp4a');
+        setSamplerate(req.samplerate || 44100);
+        setPreset(req.preset || 'veryfast');
+        setKeyint(req.keyint || 60);
+        setSelectedAudioTrack(req.audio_track ?? null);
+        setSelectedSubTrack(req.sub_track ?? null);
+        setInstanceName(req.name || '');
+    };
+
+    const resetForm = () => {
+        setVideoPath('');
+        setLoop(true);
+        setVideoBitrate(3000);
+        setAudioBitrate(128);
+        setFps(60);
+        setScale('Auto');
+        setVcodec('h264');
+        setAcodec('mp4a');
+        setSamplerate(44100);
+        setPreset('veryfast');
+        setKeyint(60);
+        setSelectedAudioTrack(null);
+        setSelectedSubTrack(null);
+        setInstanceName('');
+        setStartError(null);
+    };
+
+    const handleReconfigOpen = () => {
+        if (!activeInstance) return;
+        setIsReconfiguring(true);
+        setShouldAutoSelectTracks(false);
+        const req = activeInstance.start_req || {
+            video_path: activeInstance.video_path,
+            loop: true,
+            video_bitrate: 3000,
+            audio_bitrate: 128,
+            fps: 60,
+            scale: 'Auto',
+            vcodec: 'h264',
+            acodec: 'mp4a',
+            samplerate: 44100,
+            preset: 'veryfast',
+            keyint: 60,
+            audio_track: null,
+            sub_track: null,
+            name: activeInstance.name,
+            stream_key: localStorage.getItem('twitch_stream_key') || '',
+            rtmp_url: localStorage.getItem('rtmp_url') || '',
+        };
+        populateForm(req as StartVLCRequest);
+        openStartModal();
+    };
+
+    const handleStartNewOpen = () => {
+        setIsReconfiguring(false);
+        setShouldAutoSelectTracks(true);
+        resetForm();
+        const savedTwitch = localStorage.getItem('twitch_stream_key') || '';
+        const savedRtmp = localStorage.getItem('rtmp_url') || '';
+        setStreamKey(savedTwitch);
+        setRtmpUrl(savedRtmp);
+        openStartModal();
+    };
 
     // Movie Browser State
     const [browserOpened, { open: openBrowser, close: closeBrowser }] = useDisclosure();
@@ -302,15 +406,17 @@ export default function Home() {
                 setAudioTracks(data.audio || []);
                 setSubTracks(data.subtitle || []);
                 // Auto-select the first available track if there are any
-                if (data.audio && data.audio.length > 0) {
-                    setSelectedAudioTrack(data.audio[0].vlc_index);
-                } else {
-                    setSelectedAudioTrack(null);
-                }
-                if (data.subtitle && data.subtitle.length > 0) {
-                    setSelectedSubTrack(data.subtitle[0].vlc_index);
-                } else {
-                    setSelectedSubTrack(null);
+                if (shouldAutoSelectTracks) {
+                    if (data.audio && data.audio.length > 0) {
+                        setSelectedAudioTrack(data.audio[0].vlc_index);
+                    } else {
+                        setSelectedAudioTrack(null);
+                    }
+                    if (data.subtitle && data.subtitle.length > 0) {
+                        setSelectedSubTrack(data.subtitle[0].vlc_index);
+                    } else {
+                        setSelectedSubTrack(null);
+                    }
                 }
             })
             .catch((err) => {
@@ -320,8 +426,11 @@ export default function Home() {
                 setSelectedAudioTrack(null);
                 setSelectedSubTrack(null);
             })
-            .finally(() => setProbing(false));
-    }, [videoPath]);
+            .finally(() => {
+                setProbing(false);
+                setShouldAutoSelectTracks(true);
+            });
+    }, [videoPath, shouldAutoSelectTracks]);
 
     // Poll status and logs of the active instance every 1s
     useEffect(() => {
@@ -485,7 +594,8 @@ export default function Home() {
         }
 
         setStarting(true);
-        fetch(APIManager.START(), {
+        const url = isReconfiguring && activeId ? APIManager.RECONFIGURE(activeId) : APIManager.START();
+        fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -499,6 +609,12 @@ export default function Home() {
                 name: instanceName || undefined,
                 audio_track: selectedAudioTrack !== null ? selectedAudioTrack : undefined,
                 sub_track: selectedSubTrack !== null ? selectedSubTrack : undefined,
+                scale,
+                vcodec,
+                acodec,
+                samplerate,
+                preset,
+                keyint,
             }),
         })
             .then(async (res) => {
@@ -625,7 +741,7 @@ export default function Home() {
                                 >
                                     <IconRefresh size={16} />
                                 </ActionIcon>
-                                <ActionIcon variant="filled" onClick={openStartModal} aria-label="Start new instance">
+                                <ActionIcon variant="filled" onClick={handleStartNewOpen} aria-label="Start new instance">
                                     <IconPlus size={16} />
                                 </ActionIcon>
                             </Group>
@@ -658,7 +774,10 @@ export default function Home() {
                                         telnet:{activeInstance.telnet_port} · http:{activeInstance.http_port}
                                     </Text>
                                 </Stack>
-                                <Group mt="xs" grow>
+                                <Group mt="xs" grow gap={4}>
+                                    <Button size="xs" color="blue" variant="light" onClick={handleReconfigOpen}>
+                                        Configure
+                                    </Button>
                                     <Button size="xs" color="orange" variant="light" onClick={() => stopActive(false)}>
                                         Stop
                                     </Button>
@@ -778,7 +897,7 @@ export default function Home() {
                 {!activeId ? (
                     <Card withBorder>
                         <Text c="dimmed">No instance selected. Start a new VLC stream to begin.</Text>
-                        <Button mt="sm" leftSection={<IconPlus size={16} />} onClick={openStartModal}>
+                        <Button mt="sm" leftSection={<IconPlus size={16} />} onClick={handleStartNewOpen}>
                             Start VLC
                         </Button>
                     </Card>
@@ -1074,7 +1193,7 @@ export default function Home() {
             </AppShell.Main>
 
             {/* ---------------- Start instance modal ---------------- */}
-            <Modal opened={startModalOpened} onClose={closeStartModal} title="Start a new VLC stream">
+            <Modal opened={startModalOpened} onClose={closeStartModal} title={isReconfiguring ? 'Configure Stream Settings' : 'Start a new VLC stream'}>
                 <Stack gap="sm">
                     <Group align="flex-end" gap="xs">
                         <TextInput
@@ -1157,6 +1276,58 @@ export default function Home() {
                         <NumberInput label="FPS" value={fps} onChange={(v) => setFps(Number(v))} min={1} max={60} />
                     </SimpleGrid>
 
+                    <Switch
+                        label="Show advanced transcode settings"
+                        checked={showAdvanced}
+                        onChange={(e) => setShowAdvanced(e.currentTarget.checked)}
+                    />
+
+                    {showAdvanced && (
+                        <>
+                            <Divider label="Advanced transcode options" />
+                            <SimpleGrid cols={3}>
+                                <TextInput
+                                    label="Video Codec"
+                                    placeholder="h264"
+                                    value={vcodec}
+                                    onChange={(e) => setVcodec(e.currentTarget.value)}
+                                />
+                                <TextInput
+                                    label="Audio Codec"
+                                    placeholder="mp4a"
+                                    value={acodec}
+                                    onChange={(e) => setAcodec(e.currentTarget.value)}
+                                />
+                                <TextInput
+                                    label="Scale"
+                                    placeholder="Auto"
+                                    value={scale}
+                                    onChange={(e) => setScale(e.currentTarget.value)}
+                                />
+                            </SimpleGrid>
+                            <SimpleGrid cols={3}>
+                                <NumberInput
+                                    label="Samplerate"
+                                    value={samplerate}
+                                    onChange={(v) => setSamplerate(Number(v))}
+                                    min={8000}
+                                />
+                                <TextInput
+                                    label="Preset"
+                                    placeholder="veryfast"
+                                    value={preset}
+                                    onChange={(e) => setPreset(e.currentTarget.value)}
+                                />
+                                <NumberInput
+                                    label="Keyframe interval"
+                                    value={keyint}
+                                    onChange={(v) => setKeyint(Number(v))}
+                                    min={1}
+                                />
+                            </SimpleGrid>
+                        </>
+                    )}
+
                     {startError && (
                         <Text size="sm" c="red">
                             {startError}
@@ -1164,7 +1335,7 @@ export default function Home() {
                     )}
 
                     <Button onClick={handleStart} loading={starting} fullWidth>
-                        Start VLC
+                        {isReconfiguring ? 'Reconfigure & Restart Stream' : 'Start VLC'}
                     </Button>
                 </Stack>
             </Modal>

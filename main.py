@@ -51,12 +51,18 @@ class StartVLCRequest(BaseModel):
     stream_key: Optional[str] = Field(None, description="Twitch stream key")
     rtmp_url: Optional[str] = Field(None, description="Full RTMP dst, overrides stream_key")
     loop: bool = True
-    video_bitrate: int = 2000
+    video_bitrate: int = 3000
     audio_bitrate: int = 128
-    fps: int = 30
+    fps: int = 60
     name: Optional[str] = None
     audio_track: Optional[int] = Field(None, description="Audio track index (0 to n)")
     sub_track: Optional[int] = Field(None, description="Subtitle track index (0 to n)")
+    scale: str = "Auto"
+    vcodec: str = "h264"
+    acodec: str = "mp4a"
+    samplerate: int = 44100
+    preset: str = "veryfast"
+    keyint: int = 60
 
 
 class InstanceInfo(BaseModel):
@@ -69,6 +75,7 @@ class InstanceInfo(BaseModel):
     status: str
     started_at: Optional[float]
     returncode: Optional[int]
+    start_req: Optional[StartVLCRequest] = None
 
 
 class ExecRequest(BaseModel):
@@ -89,6 +96,7 @@ class VLCInstance:
         self.started_at: Optional[float] = None
         self.log_lines: deque = deque(maxlen=200)
         self._reader_task: Optional[asyncio.Task] = None
+        self.start_req: Optional[StartVLCRequest] = None
 
     def to_info(self) -> InstanceInfo:
         return InstanceInfo(
@@ -101,6 +109,7 @@ class VLCInstance:
             status=self.status,
             started_at=self.started_at,
             returncode=self.process.poll() if self.process else None,
+            start_req=self.start_req,
         )
 
     async def _read_logs(self):
@@ -131,7 +140,7 @@ class VLCManager:
             p = BASE_MOVIES_DIR / raw
         return p.resolve()
 
-    async def start(self, req: StartVLCRequest) -> VLCInstance:
+    async def start(self, req: StartVLCRequest, instance_id: Optional[str] = None, telnet_port: Optional[int] = None, http_port: Optional[int] = None) -> VLCInstance:
         async with self._lock:
             video_path = self._resolve_video_path(req.video_path)
             if not video_path.exists():
@@ -145,18 +154,35 @@ class VLCManager:
                     raise HTTPException(status_code=400, detail="Provide rtmp_url or stream_key")
                 dst = f"rtmp://live.twitch.tv/app/{req.stream_key}"
 
-            instance_id = uuid.uuid4().hex[:8]
+            if not instance_id:
+                instance_id = uuid.uuid4().hex[:8]
             name = req.name or instance_id
-            telnet_port = find_free_port()
-            http_port = find_free_port()
+            if not telnet_port:
+                telnet_port = find_free_port()
+            if not http_port:
+                http_port = find_free_port()
 
-            transcode_opts = f"vcodec=h264,vb={req.video_bitrate},acodec=aac,ab={req.audio_bitrate},channels=2,fps={req.fps}"
+            # Generate dynamic SOUT options based on request params
+            transcode_opts = (
+                f"vcodec={req.vcodec},vb={req.video_bitrate},"
+                f"scale={req.scale},acodec={req.acodec},ab={req.audio_bitrate},"
+                f"channels=2,samplerate={req.samplerate},fps={req.fps}"
+            )
+            
+            if req.preset or req.keyint:
+                venc_opts = []
+                if req.preset:
+                    venc_opts.append(f"preset={req.preset}")
+                if req.keyint:
+                    venc_opts.append(f"keyint={req.keyint}")
+                transcode_opts += f",venc=x264{{{','.join(venc_opts)}}}"
+            
             if req.sub_track is not None:
                 transcode_opts += ",soverlay"
 
             sout = (
                 f"#transcode{{{transcode_opts}}}"
-                f":std{{access=rtmp,mux=ffmpeg{{mux=flv}},dst={dst}}}"
+                f":std{{access=rtmp,mux=flv,dst={dst}}}"
             )
 
             args = [
@@ -180,7 +206,17 @@ class VLCManager:
             if req.sub_track is not None:
                 args.append(f"--sub-track={req.sub_track}")
 
-            instance = VLCInstance(instance_id, name, str(video_path), telnet_port, http_port)
+            # Reuse existing instance configuration if reconfiguring
+            if instance_id in self.instances:
+                instance = self.instances[instance_id]
+                instance.video_path = str(video_path)
+                instance.status = "starting"
+                instance.process = None
+                instance.log_lines.clear()
+            else:
+                instance = VLCInstance(instance_id, name, str(video_path), telnet_port, http_port)
+
+            instance.start_req = req
 
             import traceback
             print("--- Launching VLC ---")
@@ -395,6 +431,21 @@ async def get_movies(path: str = ""):
 async def start_vlc(req: StartVLCRequest):
     instance = await manager.start(req)
     return instance.to_info()
+
+
+@app.post("/vlc/{instance_id}/reconfigure", response_model=InstanceInfo)
+async def reconfigure_instance(instance_id: str, req: StartVLCRequest):
+    inst = manager.get(instance_id)
+    # Stop the current process
+    await manager.stop(instance_id, force=True)
+    # Start it again on the same ports!
+    new_inst = await manager.start(
+        req,
+        instance_id=instance_id,
+        telnet_port=inst.telnet_port,
+        http_port=inst.http_port
+    )
+    return new_inst.to_info()
 
 
 @app.get("/vlc/instances", response_model=List[InstanceInfo])
