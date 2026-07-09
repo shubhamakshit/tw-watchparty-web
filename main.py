@@ -18,9 +18,7 @@ from pydantic import BaseModel, Field
 
 # ---------------- Config ----------------
 
-default_movies_dir = Path.home() / "Downloads"
-if not default_movies_dir.exists():
-    default_movies_dir = Path.home()
+default_movies_dir = Path.home()
 
 BASE_MOVIES_DIR = Path(os.getenv("BASE_MOVIES_DIR", default_movies_dir)).resolve()
 PASSWORD = os.getenv("VLC_PASSWORD", "pass")
