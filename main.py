@@ -679,11 +679,13 @@ async def add_download(req: AddDownloadRequest):
     if not aria2_manager.api:
         raise HTTPException(status_code=503, detail="aria2c daemon is not running")
     try:
-        if req.uri.startswith("magnet:") or req.uri.endswith(".torrent"):
-            dl = await asyncio.to_thread(aria2_manager.api.add, req.uri)
+        if req.uri.startswith("magnet:"):
+            dl = await asyncio.to_thread(aria2_manager.api.add_magnet, req.uri)
+        elif req.uri.endswith(".torrent") and not req.uri.startswith("http"):
+            dl = await asyncio.to_thread(aria2_manager.api.add_torrent, req.uri)
         else:
-            dl = await asyncio.to_thread(aria2_manager.api.add, [req.uri])
-        return {"status": "success", "gid": dl[0].gid if isinstance(dl, list) else dl.gid}
+            dl = await asyncio.to_thread(aria2_manager.api.add_uris, [req.uri])
+        return {"status": "success", "gid": dl.gid}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to add download: {e}")
 
@@ -838,6 +840,12 @@ async def serve_static(catchall: str):
         file_path.relative_to(OUT_DIR)
         if file_path.is_file():
             return FileResponse(file_path)
+            
+        # Try appending .html (Next.js default static routing)
+        html_file = file_path.with_suffix(".html")
+        if html_file.is_file():
+            return FileResponse(html_file)
+            
         if file_path.is_dir():
             index_file = file_path / "index.html"
             if index_file.is_file():
