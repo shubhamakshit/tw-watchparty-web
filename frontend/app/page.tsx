@@ -358,12 +358,21 @@ export default function Home() {
         };
     }, []);
 
-    // Load twitch key and rtmpUrl on mount
+    // Load twitch key, rtmpUrl, and check play query param on mount
     useEffect(() => {
         const savedKey = localStorage.getItem('twitch_stream_key');
         if (savedKey) setStreamKey(savedKey);
         const savedRtmp = localStorage.getItem('rtmp_url');
         if (savedRtmp) setRtmpUrl(savedRtmp);
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const playPath = urlParams.get('play');
+        if (playPath) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+            setIsReconfiguring(false);
+            setVideoPath(playPath);
+            openStartModal();
+        }
     }, []);
 
     // Fetch movies directory contents for browser
@@ -708,6 +717,15 @@ export default function Home() {
                                 {activeInstance.name} · {activeInstance.status}
                             </Badge>
                         )}
+                        <Button
+                            component="a"
+                            href="/manager"
+                            variant="light"
+                            size="sm"
+                            leftSection={<IconFolder size={16} />}
+                        >
+                            Media Manager
+                        </Button>
                         <ActionIcon
                             variant="default"
                             onClick={() => toggleColorScheme()}

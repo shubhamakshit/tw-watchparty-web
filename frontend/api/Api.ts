@@ -64,6 +64,42 @@ class APIManager {
     static PROBE(path = ''): string {
         return `${APIManager.baseUrl}/movies/probe/${path}`;
     }
+
+    // ---- Aria2 downloader ----
+
+    static ARIA2_LIST(): string {
+        return `${APIManager.baseUrl}/aria2/downloads`;
+    }
+
+    static ARIA2_ADD(): string {
+        return `${APIManager.baseUrl}/aria2/add`;
+    }
+
+    static ARIA2_PAUSE(gid: string): string {
+        return `${APIManager.baseUrl}/aria2/pause/${gid}`;
+    }
+
+    static ARIA2_RESUME(gid: string): string {
+        return `${APIManager.baseUrl}/aria2/resume/${gid}`;
+    }
+
+    static ARIA2_REMOVE(gid: string): string {
+        return `${APIManager.baseUrl}/aria2/remove/${gid}`;
+    }
+
+    static ARIA2_PURGE(): string {
+        return `${APIManager.baseUrl}/aria2/purge`;
+    }
+
+    // ---- File Explorer ----
+
+    static EXPLORER_LIST(path = ''): string {
+        return `${APIManager.baseUrl}/explorer/${path}`;
+    }
+
+    static EXPLORER_DELETE(): string {
+        return `${APIManager.baseUrl}/explorer/delete`;
+    }
 }
 
 export default APIManager;

@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 import telnetlib
 import requests
+import aria2p
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -25,6 +26,72 @@ BASE_MOVIES_DIR = Path(os.getenv("BASE_MOVIES_DIR", default_movies_dir)).resolve
 PASSWORD = os.getenv("VLC_PASSWORD", "pass")
 TELNET_HOST = "localhost"
 VLC_EXECUTABLE = os.getenv("VLC_EXECUTABLE", "vlc")
+
+
+class Aria2Manager:
+    def __init__(self):
+        self.process = None
+        self.api = None
+
+    async def start(self):
+        # Try connecting first in case it's already running
+        try:
+            client = aria2p.Client(host="http://localhost", port=6800, secret="")
+            self.api = aria2p.API(client)
+            await asyncio.to_thread(self.api.get_version)
+            print("Connected to existing aria2c daemon.")
+            return
+        except Exception:
+            pass
+
+        # Start aria2c subprocess
+        print("Starting aria2c daemon...")
+        args = [
+            "aria2c",
+            "--enable-rpc=true",
+            "--rpc-listen-all=true",
+            "--rpc-allow-origin-all=true",
+            f"--dir={BASE_MOVIES_DIR}",
+            "--rpc-max-request-size=10M",
+            "--max-connection-per-server=16",
+            "--split=16",
+            "--min-split-size=1M",
+        ]
+        try:
+            self.process = await asyncio.to_thread(
+                subprocess.Popen,
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            print(f"Launched aria2c process. PID: {self.process.pid}")
+        except Exception as e:
+            print(f"Failed to start aria2c: {e}")
+            return
+
+        # Wait for RPC interface to become ready
+        client = aria2p.Client(host="http://localhost", port=6800, secret="")
+        self.api = aria2p.API(client)
+        for _ in range(30):
+            try:
+                await asyncio.to_thread(self.api.get_version)
+                print("aria2c daemon is ready.")
+                break
+            except Exception:
+                await asyncio.sleep(0.5)
+
+    def stop(self):
+        if self.process and self.process.poll() is None:
+            print("Stopping aria2c process...")
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            print("aria2c process stopped.")
+
+
+aria2_manager = Aria2Manager()
 
 app = FastAPI(title="VLC Control API", debug=True)
 
@@ -80,6 +147,14 @@ class InstanceInfo(BaseModel):
 
 class ExecRequest(BaseModel):
     command: str
+
+
+class AddDownloadRequest(BaseModel):
+    uri: str
+
+
+class DeleteFileRequest(BaseModel):
+    path: str
 
 
 # ---------------- VLC instance / manager ----------------
@@ -243,6 +318,18 @@ class VLCManager:
 
         ok = await self._wait_for_telnet(instance, timeout=8)
         instance.status = "running" if ok else "error"
+        if ok:
+            # Headless VLC often starts muted (volume 0) when no soundcard is detected.
+            # Explicitly initialize VLC volume to 256 (100%) so stream audio works.
+            try:
+                await asyncio.to_thread(
+                    requests.get,
+                    f"http://localhost:{instance.http_port}/requests/status.json?command=volume&val=256",
+                    auth=("", PASSWORD),
+                    timeout=2,
+                )
+            except Exception:
+                pass
         if not ok:
             instance.log_lines.append("Telnet interface did not become ready in time.")
         return instance
@@ -550,8 +637,182 @@ async def change_track(instance_id: str, type: str, val: int):
         raise HTTPException(status_code=500, detail=f"Failed to change track: {e}")
 
 
+# ---------------- Aria2 / Explorer API routes ----------------
+
+@app.on_event("startup")
+async def startup_event():
+    await aria2_manager.start()
+
+
+@app.get("/aria2/downloads")
+async def get_downloads():
+    if not aria2_manager.api:
+        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
+    try:
+        downloads = await asyncio.to_thread(aria2_manager.api.get_downloads)
+        results = []
+        for dl in downloads:
+            total = dl.total_length
+            completed = dl.completed_length
+            pct = (completed / total * 100) if total > 0 else 0
+            
+            results.append({
+                "gid": dl.gid,
+                "name": dl.name,
+                "status": dl.status,
+                "total_length": total,
+                "completed_length": completed,
+                "progress": round(pct, 2),
+                "download_speed": dl.download_speed,
+                "download_speed_str": dl.download_speed_string(),
+                "eta": dl.eta_string(),
+                "files": [str(f.path) for f in dl.files],
+                "error_message": dl.error_message
+            })
+        return {"status": "success", "downloads": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch downloads: {e}")
+
+
+@app.post("/aria2/add")
+async def add_download(req: AddDownloadRequest):
+    if not aria2_manager.api:
+        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
+    try:
+        if req.uri.startswith("magnet:") or req.uri.endswith(".torrent"):
+            dl = await asyncio.to_thread(aria2_manager.api.add, req.uri)
+        else:
+            dl = await asyncio.to_thread(aria2_manager.api.add, [req.uri])
+        return {"status": "success", "gid": dl[0].gid if isinstance(dl, list) else dl.gid}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to add download: {e}")
+
+
+@app.post("/aria2/pause/{gid}")
+async def pause_download(gid: str):
+    if not aria2_manager.api:
+        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
+    try:
+        dl = await asyncio.to_thread(aria2_manager.api.get_download, gid)
+        await asyncio.to_thread(dl.pause)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/aria2/resume/{gid}")
+async def resume_download(gid: str):
+    if not aria2_manager.api:
+        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
+    try:
+        dl = await asyncio.to_thread(aria2_manager.api.get_download, gid)
+        await asyncio.to_thread(dl.resume)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/aria2/remove/{gid}")
+async def remove_download(gid: str):
+    if not aria2_manager.api:
+        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
+    try:
+        dl = await asyncio.to_thread(aria2_manager.api.get_download, gid)
+        await asyncio.to_thread(dl.remove, force=True)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/aria2/purge")
+async def purge_downloads():
+    if not aria2_manager.api:
+        raise HTTPException(status_code=503, detail="aria2c daemon is not running")
+    try:
+        await asyncio.to_thread(aria2_manager.api.autopurge)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/explorer")
+@app.get("/explorer/{path:path}")
+async def explorer_list(path: str = ""):
+    target = (BASE_MOVIES_DIR / path).resolve()
+    try:
+        target.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+    
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Not a directory")
+
+    entries = []
+    try:
+        for item in os.scandir(target):
+            if item.name.startswith("."):
+                continue
+            
+            stat = item.stat()
+            relative = str(Path(item.path).relative_to(BASE_MOVIES_DIR)).replace("\\", "/")
+            
+            is_directory = item.is_dir()
+            size_bytes = stat.st_size if not is_directory else 0
+            
+            if is_directory:
+                size_str = "dir"
+            else:
+                if size_bytes >= 1024**3:
+                    size_str = f"{size_bytes / 1024**3:.2f} GB"
+                elif size_bytes >= 1024**2:
+                    size_str = f"{size_bytes / 1024**2:.2f} MB"
+                elif size_bytes >= 1024:
+                    size_str = f"{size_bytes / 1024:.2f} KB"
+                else:
+                    size_str = f"{size_bytes} B"
+
+            entries.append({
+                "name": item.name,
+                "type": "directory" if is_directory else "file",
+                "size": size_bytes,
+                "size_str": size_str,
+                "modified_at": stat.st_mtime,
+                "path": relative
+            })
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    entries.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
+    return {"status": "success", "entries": entries, "current_path": path}
+
+
+@app.post("/explorer/delete")
+async def explorer_delete(req: DeleteFileRequest):
+    target = (BASE_MOVIES_DIR / req.path).resolve()
+    try:
+        target.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+    
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File or directory not found")
+
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        return {"status": "success", "message": f"Successfully deleted {req.path}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
+    aria2_manager.stop()
     for inst in list(manager.instances.values()):
         if inst.process and inst.process.poll() is None:
             try:
@@ -577,6 +838,10 @@ async def serve_static(catchall: str):
         file_path.relative_to(OUT_DIR)
         if file_path.is_file():
             return FileResponse(file_path)
+        if file_path.is_dir():
+            index_file = file_path / "index.html"
+            if index_file.is_file():
+                return FileResponse(index_file)
     except ValueError:
         pass
         
