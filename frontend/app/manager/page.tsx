@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
     Container,
     Card,
+    Checkbox,
     Stack,
     Switch,
     Group,
@@ -110,6 +111,7 @@ export default function MediaManager() {
     const [selectedSeasonLabel, setSelectedSeasonLabel] = useState('');
     const [queuingGid, setQueuingGid] = useState<string | null>(null);
     const [queuingAll, setQueuingAll] = useState(false);
+    const [selectedEpisodeLinks, setSelectedEpisodeLinks] = useState<string[]>([]);
 
     const handleScraperSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -120,6 +122,7 @@ export default function MediaManager() {
         setSelectedMovie(null);
         setQualities([]);
         setEpisodes([]);
+        setSelectedEpisodeLinks([]);
 
         fetch(APIManager.ACER_SEARCH(), {
             method: 'POST',
@@ -141,6 +144,7 @@ export default function MediaManager() {
         setSelectedMovie(result);
         setQualities([]);
         setEpisodes([]);
+        setSelectedEpisodeLinks([]);
 
         fetch(APIManager.ACER_QUALITIES(), {
             method: 'POST',
@@ -172,6 +176,7 @@ export default function MediaManager() {
         setScraperError(null);
         setSelectedSeasonLabel(quality.title || '');
         setEpisodes([]);
+        setSelectedEpisodeLinks([]);
 
         fetch(APIManager.ACER_EPISODES(), {
             method: 'POST',
@@ -213,19 +218,36 @@ export default function MediaManager() {
             .finally(() => setQueuingGid(null));
     };
 
-    const handleQueueAllEpisodes = async () => {
-        if (!episodes || episodes.length === 0 || !selectedMovie) return;
+    const handleToggleAllEpisodes = (checked: boolean) => {
+        if (checked) {
+            const allLinks = episodes.map((ep) => ep.link || ep.url).filter(Boolean);
+            setSelectedEpisodeLinks(allLinks);
+        } else {
+            setSelectedEpisodeLinks([]);
+        }
+    };
+
+    const handleToggleEpisode = (link: string, checked: boolean) => {
+        if (checked) {
+            setSelectedEpisodeLinks((prev) => [...prev, link]);
+        } else {
+            setSelectedEpisodeLinks((prev) => prev.filter((item) => item !== link));
+        }
+    };
+
+    const handleQueueSelectedEpisodes = async () => {
+        if (selectedEpisodeLinks.length === 0 || !selectedMovie) return;
         setQueuingAll(true);
         let successCount = 0;
         
         try {
             for (let i = 0; i < episodes.length; i++) {
                 const ep = episodes[i];
+                const epLink = ep.link || ep.url;
+                if (!epLink || !selectedEpisodeLinks.includes(epLink)) continue;
+
                 const cleanShowTitle = selectedMovie.mainTitle || selectedMovie.title || 'Series';
                 const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title || `Episode_${i+1}`}.mp4`;
-                const epLink = ep.link || ep.url;
-                if (!epLink) continue;
-
                 try {
                     await handleQueueScraperDownload(epLink, filename, 'episode');
                     successCount++;
@@ -234,7 +256,7 @@ export default function MediaManager() {
                     console.error("Failed to queue episode:", ep.title, e);
                 }
             }
-            alert(`Queued ${successCount} episodes successfully!`);
+            setSelectedEpisodeLinks([]);
         } finally {
             setQueuingAll(false);
         }
@@ -290,8 +312,38 @@ export default function MediaManager() {
     // Start polling downloads and fetch initial explorer list
     useEffect(() => {
         fetchDownloads();
-        fetchExplorer('');
-        fetchConfig();
+        
+        const savedPath = localStorage.getItem('watchparty_download_path');
+        if (savedPath) {
+            fetch(APIManager.UPDATE_CONFIG(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    movies_dir: savedPath,
+                    create_if_missing: true,
+                }),
+            })
+                .then(async (res) => {
+                    const data = await res.json();
+                    if (res.ok) {
+                        setCurrentMoviesDir(data.current_movies_dir);
+                        setNewMoviesDir(data.current_movies_dir);
+                        fetchExplorer('');
+                    } else {
+                        fetchExplorer('');
+                    }
+                })
+                .catch(() => {
+                    fetchExplorer('');
+                })
+                .finally(() => {
+                    fetchConfig();
+                });
+        } else {
+            fetchExplorer('');
+            fetchConfig();
+        }
+
         downloadsIntervalRef.current = setInterval(fetchDownloads, 2000);
         return () => {
             if (downloadsIntervalRef.current) clearInterval(downloadsIntervalRef.current);
@@ -320,6 +372,7 @@ export default function MediaManager() {
                 setSettingsSuccess('Download directory updated successfully!');
                 setCurrentMoviesDir(data.current_movies_dir);
                 setNewMoviesDir(data.current_movies_dir);
+                localStorage.setItem('watchparty_download_path', data.current_movies_dir);
                 fetchExplorer('');
             })
             .catch((err) => setSettingsError(err.message || String(err)))
@@ -902,9 +955,7 @@ export default function MediaManager() {
                                                                         const cleanMovieTitle = selectedMovie.mainTitle || selectedMovie.title || 'Movie';
                                                                         const qualityLabel = q.quality || 'Direct';
                                                                         const filename = `${cleanMovieTitle}_${qualityLabel}.mp4`;
-                                                                        handleQueueScraperDownload(q.url, filename, 'movie')
-                                                                            .then(() => alert(`Queued movie: ${filename}`))
-                                                                            .catch(() => {});
+                                                                        handleQueueScraperDownload(q.url, filename, 'movie');
                                                                     }
                                                                 }}
                                                                 loading={queuingGid === q.url}
@@ -926,48 +977,64 @@ export default function MediaManager() {
                                                         <Button
                                                             size="xs"
                                                             color="green"
-                                                            onClick={handleQueueAllEpisodes}
+                                                            onClick={handleQueueSelectedEpisodes}
                                                             loading={queuingAll}
+                                                            disabled={selectedEpisodeLinks.length === 0}
                                                         >
-                                                            Bulk Download All
+                                                            Download Selected ({selectedEpisodeLinks.length})
                                                         </Button>
                                                     </Group>
                                                     <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
                                                         <Table striped highlightOnHover verticalSpacing="xs">
                                                             <Table.Thead>
                                                                 <Table.Tr>
+                                                                    <Table.Th style={{ width: '40px' }}>
+                                                                        <Checkbox
+                                                                            checked={episodes.length > 0 && selectedEpisodeLinks.length === episodes.map(e => e.link || e.url).filter(Boolean).length}
+                                                                            indeterminate={selectedEpisodeLinks.length > 0 && selectedEpisodeLinks.length < episodes.map(e => e.link || e.url).filter(Boolean).length}
+                                                                            onChange={(e) => handleToggleAllEpisodes(e.currentTarget.checked)}
+                                                                        />
+                                                                    </Table.Th>
                                                                     <Table.Th>Episode Name</Table.Th>
                                                                     <Table.Th style={{ width: '120px' }}>Actions</Table.Th>
                                                                 </Table.Tr>
                                                             </Table.Thead>
                                                             <Table.Tbody>
-                                                                {episodes.map((ep, idx) => (
-                                                                    <Table.Tr key={idx}>
-                                                                        <Table.Td>
-                                                                            <Text size="xs" fw={500}>
-                                                                                {ep.title}
-                                                                            </Text>
-                                                                        </Table.Td>
-                                                                        <Table.Td>
-                                                                            <Button
-                                                                                size="xs"
-                                                                                variant="light"
-                                                                                onClick={() => {
-                                                                                    const cleanShowTitle = selectedMovie.mainTitle || selectedMovie.title || 'Series';
-                                                                                    const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title}.mp4`;
-                                                                                    const epLink = ep.link || ep.url;
-                                                                                    if (!epLink) return;
-                                                                                    handleQueueScraperDownload(epLink, filename, 'episode')
-                                                                                        .then(() => alert(`Queued episode: ${filename}`))
-                                                                                        .catch(() => {});
-                                                                                }}
-                                                                                loading={queuingGid === (ep.link || ep.url)}
-                                                                            >
-                                                                                Queue
-                                                                            </Button>
-                                                                        </Table.Td>
-                                                                    </Table.Tr>
-                                                                ))}
+                                                                {episodes.map((ep, idx) => {
+                                                                    const epLink = ep.link || ep.url;
+                                                                    return (
+                                                                        <Table.Tr key={idx}>
+                                                                            <Table.Td>
+                                                                                {epLink && (
+                                                                                    <Checkbox
+                                                                                        checked={selectedEpisodeLinks.includes(epLink)}
+                                                                                        onChange={(e) => handleToggleEpisode(epLink, e.currentTarget.checked)}
+                                                                                    />
+                                                                                )}
+                                                                            </Table.Td>
+                                                                            <Table.Td>
+                                                                                <Text size="xs" fw={500}>
+                                                                                    {ep.title}
+                                                                                </Text>
+                                                                            </Table.Td>
+                                                                            <Table.Td>
+                                                                                <Button
+                                                                                    size="xs"
+                                                                                    variant="light"
+                                                                                    onClick={() => {
+                                                                                        const cleanShowTitle = selectedMovie.mainTitle || selectedMovie.title || 'Series';
+                                                                                        const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title}.mp4`;
+                                                                                        if (!epLink) return;
+                                                                                        handleQueueScraperDownload(epLink, filename, 'episode');
+                                                                                    }}
+                                                                                    loading={queuingGid === epLink}
+                                                                                >
+                                                                                    Queue
+                                                                                </Button>
+                                                                            </Table.Td>
+                                                                        </Table.Tr>
+                                                                    );
+                                                                })}
                                                             </Table.Tbody>
                                                         </Table>
                                                     </div>
