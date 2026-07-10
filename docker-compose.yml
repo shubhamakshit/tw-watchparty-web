@@ -13,5 +13,5 @@ services:
       - VLC_PASSWORD=pass
     volumes:
       # Replace the left path with the absolute path to your movies folder on your host server
-      - C:\Users\Administrator\Downloads:/movies
+      - ./movies:/movies
     restart: unless-stopped
