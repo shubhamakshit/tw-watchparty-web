@@ -1,3 +1,13 @@
+---
+title: WatchParty Bridge
+emoji: 🎬
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # tw-watchparty-server (WatchParty Bridge)
 
 WatchParty Bridge is a high-performance VLC transcode controller, Twitch streamer, and Media/Download Manager. It provides a unified web dashboard to stream local/downloaded video files to Twitch with fully custom transcode profiles, hot track switching, and an integrated downloader/scraper.
