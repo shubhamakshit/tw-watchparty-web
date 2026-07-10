@@ -847,8 +847,8 @@ export default function MediaManager() {
                                                     }}
                                                     onClick={() => handleFetchQualities(result)}
                                                 >
-                                                    <Group justify="space-between" wrap="nowrap">
-                                                        <Group gap="sm" style={{ flex: 1, marginRight: '10px' }} wrap="nowrap" align="flex-start">
+                                                    <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: '12px', width: '100%' }}>
+                                                        <div style={{ display: 'flex', flexDirection: 'row', gap: '12px', flex: 1, minWidth: 0, alignItems: 'flex-start' }}>
                                                             {result.image && (
                                                                 <Image
                                                                     src={result.image}
@@ -856,21 +856,22 @@ export default function MediaManager() {
                                                                     h={80}
                                                                     fallbackSrc="https://placehold.co/55x80?text=No+Poster"
                                                                     radius="xs"
+                                                                    style={{ flexShrink: 0 }}
                                                                 />
                                                             )}
-                                                            <Stack gap={4} style={{ flex: 1 }}>
+                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: 0 }}>
                                                                 <Text size="sm" fw={600} style={{ wordBreak: 'break-word', whiteSpace: 'normal' }}>
                                                                     {result.title}
                                                                 </Text>
                                                                 <Text size="xs" c="dimmed" lineClamp={2}>
                                                                     {result.description || 'No description'}
                                                                 </Text>
-                                                            </Stack>
-                                                        </Group>
+                                                            </div>
+                                                        </div>
                                                         <Button size="xs" variant="light" leftSection={<IconPlus size={12} />} style={{ flexShrink: 0 }}>
                                                             Fetch
                                                         </Button>
-                                                    </Group>
+                                                    </div>
                                                 </Card>
                                             ))}
                                         </Stack>
