@@ -909,7 +909,7 @@ export default function MediaManager() {
                                                                 }}
                                                                 loading={queuingGid === q.url}
                                                             >
-                                                                {q.quality || q.title || `Quality ${idx+1}`}
+                                                                {q.title || q.quality || `Quality ${idx+1}`}
                                                             </Button>
                                                         );
                                                     })}
