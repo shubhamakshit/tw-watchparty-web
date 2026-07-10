@@ -835,7 +835,7 @@ export default function MediaManager() {
                                             Search for a title above to find movies and shows to download.
                                         </Text>
                                     ) : (
-                                        <Stack gap="xs" style={{ maxHeight: '500px', overflowY: 'auto' }}>
+                                        <Stack gap="xs">
                                             {scraperResults.map((result, idx) => (
                                                 <Card
                                                     key={idx}
