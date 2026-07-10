@@ -56,15 +56,29 @@ class InHouseDownloader:
     def get_download(self, gid: str):
         return self.downloads.get(gid)
 
-    def add(self, url: str):
+    def add(self, url: str, filename: Optional[str] = None, subfolder: Optional[str] = None):
         dl = SimpleDownload(url)
-        parsed = urlparse(url)
-        filename = os.path.basename(unquote(parsed.path))
-        if not filename:
-            filename = "download_" + dl.gid
         
-        dl.name = filename
-        dl.file_path = BASE_MOVIES_DIR / filename
+        if filename:
+            name = sanitize_filename(filename)
+        else:
+            parsed = urlparse(url)
+            name = os.path.basename(unquote(parsed.path))
+            if not name:
+                name = "download_" + dl.gid
+        
+        dl.name = name
+        
+        target_dir = BASE_MOVIES_DIR
+        if subfolder:
+            # Allow nested directories by splitting on slashes
+            parts = [re.sub(r'[?:*""<>|]', "", p).strip() for p in re.split(r'[\\/]', subfolder)]
+            parts = [p for p in parts if p]
+            if parts:
+                target_dir = BASE_MOVIES_DIR.joinpath(*parts)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                
+        dl.file_path = target_dir / name
         self.downloads[dl.gid] = dl
         
         # Start download task
@@ -127,7 +141,8 @@ class InHouseDownloader:
                 for part in cd.split(";"):
                     if "filename=" in part:
                         dl.name = part.split("=")[1].strip('"\'')
-                        dl.file_path = BASE_MOVIES_DIR / dl.name
+                        parent_dir = dl.file_path.parent if dl.file_path else BASE_MOVIES_DIR
+                        dl.file_path = parent_dir / dl.name
 
             is_resume = response.status_code == 206
             if not is_resume and dl.completed_length > 0:
@@ -229,6 +244,8 @@ class StartVLCRequest(BaseModel):
     samplerate: int = 44100
     preset: str = "veryfast"
     keyint: int = 60
+    start_time: Optional[int] = Field(None, description="Start playback time in seconds")
+    sort_by: Optional[str] = Field(None, description="Sorting logic for folders (natural, ctime_oldest, ctime_newest)")
 
 
 class InstanceInfo(BaseModel):
@@ -277,6 +294,7 @@ class AcerDownloadRequest(BaseModel):
     url: str
     filename: str
     series_type: str = "episode"
+    subfolder: Optional[str] = None
 
 
 def sanitize_filename(filename):
@@ -352,7 +370,6 @@ class VLCManager:
         if not p.is_absolute():
             p = BASE_MOVIES_DIR / raw
         return p.resolve()
-
     async def start(self, req: StartVLCRequest, instance_id: Optional[str] = None, telnet_port: Optional[int] = None, http_port: Optional[int] = None) -> VLCInstance:
         async with self._lock:
             video_path = self._resolve_video_path(req.video_path)
@@ -374,6 +391,29 @@ class VLCManager:
                 telnet_port = find_free_port()
             if not http_port:
                 http_port = find_free_port()
+
+            # If path is a directory, gather all media files and sort them. Otherwise just use it as a single file.
+            input_items = []
+            if video_path.is_dir():
+                media_exts = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".flv", ".mp3", ".wav", ".aac"}
+                media_files = [f for f in video_path.iterdir() if f.is_file() and f.suffix.lower() in media_exts]
+                if not media_files:
+                    raise HTTPException(status_code=400, detail="No streamable media files found in directory")
+                
+                # Sorting
+                if req.sort_by == "ctime_oldest":
+                    media_files.sort(key=lambda f: f.stat().st_ctime)
+                elif req.sort_by == "ctime_newest":
+                    media_files.sort(key=lambda f: f.stat().st_ctime, reverse=True)
+                else: # Default: Natural Alphanumeric Sort
+                    def natural_keys(path):
+                        text = path.name
+                        return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+                    media_files.sort(key=natural_keys)
+                
+                input_items = [str(f.resolve()) for f in media_files]
+            else:
+                input_items = [str(video_path)]
 
             # Generate dynamic SOUT options based on request params
             transcode_opts = (
@@ -400,7 +440,9 @@ class VLCManager:
 
             args = [
                 VLC_EXECUTABLE,
-                str(video_path),
+            ]
+            args.extend(input_items)
+            args.extend([
                 f"--sout={sout}",
                 "--intf", "telnet",
                 "--telnet-password", PASSWORD,
@@ -411,13 +453,15 @@ class VLCManager:
                 "--no-sout-all",
                 "--sout-keep",
                 "-vv",
-            ]
+            ])
             if req.loop:
                 args.append("--loop")
             if req.audio_track is not None:
                 args.append(f"--audio-track={req.audio_track}")
             if req.sub_track is not None:
                 args.append(f"--sub-track={req.sub_track}")
+            if req.start_time is not None and req.start_time > 0:
+                args.append(f"--start-time={req.start_time}")
 
             # Reuse existing instance configuration if reconfiguring
             if instance_id in self.instances:
@@ -938,12 +982,7 @@ async def acer_download(req: AcerDownloadRequest):
         direct_url = unquote(direct_url)
 
         # 2. Add to downloader
-        dl = aria2_manager.add(direct_url)
-        if req.filename:
-            sanitized = sanitize_filename(req.filename)
-            dl.name = sanitized
-            dl.file_path = BASE_MOVIES_DIR / sanitized
-            
+        dl = aria2_manager.add(direct_url, filename=req.filename, subfolder=req.subfolder)
         return {"status": "success", "gid": dl.gid, "filename": dl.name}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download queue failed: {e}")
@@ -1053,6 +1092,244 @@ async def explorer_delete(req: DeleteFileRequest):
         return {"status": "success", "message": f"Successfully deleted {req.path}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+
+
+from fastapi import UploadFile, Form
+import zipfile
+
+class CreateFolderRequest(BaseModel):
+    parent_path: str
+    folder_name: str
+
+class RenameRequest(BaseModel):
+    old_path: str
+    new_name: str
+
+class CopyMoveRequest(BaseModel):
+    source_paths: List[str]
+    target_dir: str
+
+class ZipRequest(BaseModel):
+    paths: List[str]
+    target_zip_name: str
+    current_dir: str
+
+class UnzipRequest(BaseModel):
+    zip_path: str
+    target_dir: str
+
+class ResumePositionRequest(BaseModel):
+    file_path: str
+    resume_position: int
+
+# Watch History JSON file storage helpers
+HISTORY_FILE = Path.home() / ".watchparty_history.json"
+
+def _load_history() -> List[dict]:
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        import json
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_history(history: List[dict]):
+    try:
+        import json
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+@app.get("/history")
+async def get_history():
+    return {"status": "success", "history": _load_history()}
+
+@app.post("/history/resume")
+async def update_resume_position(req: ResumePositionRequest):
+    history = _load_history()
+    history = [item for item in history if item.get("file_path") != req.file_path]
+    history.insert(0, {
+        "file_path": req.file_path,
+        "last_streamed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "resume_position": req.resume_position
+    })
+    _save_history(history[:50])
+    return {"status": "success"}
+
+@app.post("/explorer/mkdir")
+async def explorer_mkdir(req: CreateFolderRequest):
+    parent = (BASE_MOVIES_DIR / req.parent_path).resolve()
+    try:
+        parent.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+    
+    # Sanitize folder name
+    sanitized = re.sub(r'[\\/*?:"<>|]', "", req.folder_name).strip()
+    if not sanitized:
+        raise HTTPException(status_code=400, detail="Invalid folder name")
+        
+    target = parent / sanitized
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        return {"status": "success", "message": f"Created folder {sanitized}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/explorer/rename")
+async def explorer_rename(req: RenameRequest):
+    old_target = (BASE_MOVIES_DIR / req.old_path).resolve()
+    try:
+        old_target.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+    
+    if not old_target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+        
+    sanitized = re.sub(r'[\\/*?:"<>|]', "", req.new_name).strip()
+    if not sanitized:
+        raise HTTPException(status_code=400, detail="Invalid target name")
+        
+    new_target = old_target.parent / sanitized
+    if new_target.exists():
+        raise HTTPException(status_code=400, detail="Target name already exists")
+        
+    try:
+        shutil.move(str(old_target), str(new_target))
+        return {"status": "success", "message": f"Renamed to {sanitized}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/explorer/copy")
+async def explorer_copy(req: CopyMoveRequest):
+    target_dir = (BASE_MOVIES_DIR / req.target_dir).resolve()
+    try:
+        target_dir.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+        
+    if not target_dir.exists() or not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Target directory invalid")
+        
+    copied = []
+    errors = []
+    for sp in req.source_paths:
+        src = (BASE_MOVIES_DIR / sp).resolve()
+        try:
+            src.relative_to(BASE_MOVIES_DIR)
+            dest = target_dir / src.name
+            if src.is_dir():
+                shutil.copytree(src, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dest)
+            copied.append(sp)
+        except Exception as e:
+            errors.append(f"Failed to copy {sp}: {e}")
+            
+    return {"status": "success", "copied": copied, "errors": errors}
+
+@app.post("/explorer/move")
+async def explorer_move(req: CopyMoveRequest):
+    target_dir = (BASE_MOVIES_DIR / req.target_dir).resolve()
+    try:
+        target_dir.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+        
+    if not target_dir.exists() or not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Target directory invalid")
+        
+    moved = []
+    errors = []
+    for sp in req.source_paths:
+        src = (BASE_MOVIES_DIR / sp).resolve()
+        try:
+            src.relative_to(BASE_MOVIES_DIR)
+            dest = target_dir / src.name
+            shutil.move(str(src), str(dest))
+            moved.append(sp)
+        except Exception as e:
+            errors.append(f"Failed to move {sp}: {e}")
+            
+    return {"status": "success", "moved": moved, "errors": errors}
+
+@app.post("/explorer/upload")
+async def explorer_upload(
+    target_dir: str = Form(""),
+    file: UploadFile = Form(...)
+):
+    dest_dir = (BASE_MOVIES_DIR / target_dir).resolve()
+    try:
+        dest_dir.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+        
+    if not dest_dir.exists() or not dest_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Target directory invalid")
+        
+    dest_path = dest_dir / file.filename
+    try:
+        with open(dest_path, "wb") as f:
+            f.write(await file.read())
+        return {"status": "success", "filename": file.filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/explorer/zip")
+async def explorer_zip(req: ZipRequest):
+    curr_dir = (BASE_MOVIES_DIR / req.current_dir).resolve()
+    try:
+        curr_dir.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+        
+    zip_name = req.target_zip_name.strip()
+    if not zip_name.endswith(".zip"):
+        zip_name += ".zip"
+        
+    zip_path = curr_dir / zip_name
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for sp in req.paths:
+                src = (BASE_MOVIES_DIR / sp).resolve()
+                src.relative_to(BASE_MOVIES_DIR)
+                if src.is_dir():
+                    for root, dirs, files in os.walk(src):
+                        for f in files:
+                            fpath = Path(root) / f
+                            arcname = fpath.relative_to(curr_dir)
+                            zipf.write(fpath, arcname)
+                else:
+                    zipf.write(src, src.name)
+        return {"status": "success", "zip_file": zip_name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/explorer/unzip")
+async def explorer_unzip(req: UnzipRequest):
+    zip_target = (BASE_MOVIES_DIR / req.zip_path).resolve()
+    target_dir = (BASE_MOVIES_DIR / req.target_dir).resolve()
+    try:
+        zip_target.relative_to(BASE_MOVIES_DIR)
+        target_dir.relative_to(BASE_MOVIES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied")
+        
+    if not zip_target.exists() or zip_target.suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="Invalid zip file source")
+        
+    try:
+        with zipfile.ZipFile(zip_target, 'r') as zipf:
+            zipf.extractall(target_dir)
+        return {"status": "success", "message": f"Successfully unzipped to {req.target_dir}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 @app.on_event("shutdown")

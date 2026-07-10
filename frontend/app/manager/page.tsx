@@ -28,6 +28,8 @@ import {
     useMantineColorScheme,
     Image,
     LoadingOverlay,
+    MantineProvider,
+    Select,
 } from '@mantine/core';
 import {
     IconArrowLeft,
@@ -47,6 +49,14 @@ import {
     IconSearch,
     IconMovie,
     IconDeviceTv,
+    IconFolderPlus,
+    IconUpload,
+    IconCopy,
+    IconScissors,
+    IconClipboard,
+    IconArchive,
+    IconFileZip,
+    IconEdit,
 } from '@tabler/icons-react';
 import APIManager from '@/api/Api';
 
@@ -89,6 +99,21 @@ export default function MediaManager() {
     const [loadingExplorer, setLoadingExplorer] = useState(false);
     const [explorerError, setExplorerError] = useState<string | null>(null);
     const [deletingPath, setDeletingPath] = useState<string | null>(null);
+
+    // QOL File Manager States
+    const [accentColor, setAccentColor] = useState('blue');
+    const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+    const [clipboard, setClipboard] = useState<{ action: 'copy' | 'cut' | null, paths: string[] }>({ action: null, paths: [] });
+    const [createFolderOpen, setCreateFolderOpen] = useState(false);
+    const [newFolderName, setNewFolderName] = useState('');
+    const [renameOpen, setRenameOpen] = useState(false);
+    const [renameTarget, setRenameTarget] = useState<ExplorerEntry | null>(null);
+    const [renameNewName, setRenameNewName] = useState('');
+    const [zipOpen, setZipOpen] = useState(false);
+    const [zipFileName, setZipFileName] = useState('');
+    const [uploading, setUploading] = useState(false);
+    const [scraperFolderDownload, setScraperFolderDownload] = useState(true);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
 
     // Settings state
     const [defaultMoviesDir, setDefaultMoviesDir] = useState('');
@@ -193,7 +218,7 @@ export default function MediaManager() {
             .finally(() => setFetchingEpisodes(false));
     };
 
-    const handleQueueScraperDownload = (url: string, filename: string, seriesType: string) => {
+    const handleQueueScraperDownload = (url: string, filename: string, seriesType: string, subfolder?: string) => {
         setQueuingGid(url);
         setScraperError(null);
 
@@ -204,6 +229,7 @@ export default function MediaManager() {
                 url,
                 filename,
                 series_type: seriesType,
+                subfolder: subfolder || undefined,
             }),
         })
             .then(async (res) => {
@@ -249,8 +275,9 @@ export default function MediaManager() {
 
                 const cleanShowTitle = selectedMovie.mainTitle || selectedMovie.title || 'Series';
                 const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title || `Episode_${i+1}`}.mp4`;
+                const subfolder = scraperFolderDownload ? `${cleanShowTitle} - ${selectedSeasonLabel}` : undefined;
                 try {
-                    await handleQueueScraperDownload(epLink, filename, 'episode');
+                    await handleQueueScraperDownload(epLink, filename, 'episode', subfolder);
                     successCount++;
                     await new Promise((r) => setTimeout(r, 400));
                 } catch (e) {
@@ -344,12 +371,157 @@ export default function MediaManager() {
             fetchExplorer('');
             fetchConfig();
         }
+        const savedAccent = localStorage.getItem('watchparty_accent_color');
+        if (savedAccent) setAccentColor(savedAccent);
 
         downloadsIntervalRef.current = setInterval(fetchDownloads, 2000);
         return () => {
             if (downloadsIntervalRef.current) clearInterval(downloadsIntervalRef.current);
         };
     }, []);
+
+    const handleCreateFolder = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newFolderName.trim()) return;
+        fetch(APIManager.EXPLORER_MKDIR(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                parent_path: currentPath,
+                folder_name: newFolderName.trim()
+            })
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to create folder');
+                setCreateFolderOpen(false);
+                setNewFolderName('');
+                fetchExplorer(currentPath);
+            })
+            .catch((err) => setExplorerError(err.message || String(err)));
+    };
+
+    const handleRename = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!renameTarget || !renameNewName.trim()) return;
+        fetch(APIManager.EXPLORER_RENAME(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                old_path: renameTarget.path,
+                new_name: renameNewName.trim()
+            })
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to rename');
+                setRenameOpen(false);
+                setRenameTarget(null);
+                setRenameNewName('');
+                fetchExplorer(currentPath);
+            })
+            .catch((err) => setExplorerError(err.message || String(err)));
+    };
+
+    const handleCopy = () => {
+        if (selectedPaths.length === 0) return;
+        setClipboard({ action: 'copy', paths: [...selectedPaths] });
+        setSelectedPaths([]);
+    };
+
+    const handleCut = () => {
+        if (selectedPaths.length === 0) return;
+        setClipboard({ action: 'cut', paths: [...selectedPaths] });
+        setSelectedPaths([]);
+    };
+
+    const handlePaste = () => {
+        if (!clipboard.action || clipboard.paths.length === 0) return;
+        const url = clipboard.action === 'copy' ? APIManager.EXPLORER_COPY() : APIManager.EXPLORER_MOVE();
+        fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                source_paths: clipboard.paths,
+                target_dir: currentPath
+            })
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Paste operation failed');
+                if (data.errors && data.errors.length > 0) {
+                    setExplorerError(data.errors.join('; '));
+                }
+                setClipboard({ action: null, paths: [] });
+                fetchExplorer(currentPath);
+            })
+            .catch((err) => setExplorerError(err.message || String(err)));
+    };
+
+    const handleZip = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (selectedPaths.length === 0 || !zipFileName.trim()) return;
+        fetch(APIManager.EXPLORER_ZIP(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                paths: selectedPaths,
+                target_zip_name: zipFileName.trim(),
+                current_dir: currentPath
+            })
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Zip operation failed');
+                setZipOpen(false);
+                setZipFileName('');
+                setSelectedPaths([]);
+                fetchExplorer(currentPath);
+            })
+            .catch((err) => setExplorerError(err.message || String(err)));
+    };
+
+    const handleUnzip = (zipPath: string) => {
+        fetch(APIManager.EXPLORER_UNZIP(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                zip_path: zipPath,
+                target_dir: currentPath
+            })
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Unzip operation failed');
+                fetchExplorer(currentPath);
+            })
+            .catch((err) => setExplorerError(err.message || String(err)));
+    };
+
+    const handleUploadClick = () => {
+        fileInputRef.current?.click();
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        const file = files[0];
+        setUploading(true);
+        const formData = new FormData();
+        formData.append('target_dir', currentPath);
+        formData.append('file', file);
+        fetch(APIManager.EXPLORER_UPLOAD(), {
+            method: 'POST',
+            body: formData
+        })
+            .then(async (res) => {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Upload failed');
+                fetchExplorer(currentPath);
+            })
+            .catch((err) => setExplorerError(err.message || String(err)))
+            .finally(() => setUploading(false));
+    };
 
     const handleApplyConfig = (e: React.FormEvent) => {
         e.preventDefault();
@@ -477,7 +649,8 @@ export default function MediaManager() {
     ];
 
     return (
-        <AppShell header={{ height: 60 }} padding="md">
+        <MantineProvider theme={{ primaryColor: accentColor }} forceColorScheme="dark">
+            <AppShell header={{ height: 60 }} padding="md">
             <AppShell.Header>
                 <Group h="100%" px="md" justify="space-between">
                     <Group gap="xs">
@@ -688,17 +861,99 @@ export default function MediaManager() {
                                 )}
 
                                 <Card withBorder>
-                                    <Group justify="space-between" mb="md">
+                                    <Group justify="space-between" mb="md" style={{ flexWrap: 'wrap', gap: '10px' }}>
                                         <Breadcrumbs separator=">">{breadcrumbItems}</Breadcrumbs>
-                                        <Button
-                                            size="xs"
-                                            variant="outline"
-                                            onClick={() => fetchExplorer(currentPath)}
-                                            loading={loadingExplorer}
-                                            leftSection={<IconRefresh size={14} />}
-                                        >
-                                            Refresh Files
-                                        </Button>
+                                        <Group gap="xs" style={{ flexWrap: 'wrap' }}>
+                                            <input
+                                                type="file"
+                                                ref={fileInputRef}
+                                                onChange={handleFileChange}
+                                                style={{ display: 'none' }}
+                                            />
+                                            <Button
+                                                size="xs"
+                                                variant="outline"
+                                                color="blue"
+                                                onClick={() => setCreateFolderOpen(true)}
+                                                leftSection={<IconFolderPlus size={14} />}
+                                            >
+                                                New Folder
+                                            </Button>
+                                            <Button
+                                                size="xs"
+                                                variant="outline"
+                                                color="teal"
+                                                onClick={handleUploadClick}
+                                                loading={uploading}
+                                                leftSection={<IconUpload size={14} />}
+                                            >
+                                                Upload File
+                                            </Button>
+                                            <Button
+                                                size="xs"
+                                                variant="filled"
+                                                color="green"
+                                                component="a"
+                                                href={`/?play=${encodeURIComponent(currentPath)}&folder=true`}
+                                                leftSection={<IconPlayerPlay size={14} />}
+                                            >
+                                                Play Current Folder
+                                            </Button>
+                                            {selectedPaths.length > 0 && (
+                                                <>
+                                                    <Button
+                                                        size="xs"
+                                                        variant="outline"
+                                                        color="yellow"
+                                                        onClick={handleCopy}
+                                                        leftSection={<IconCopy size={14} />}
+                                                    >
+                                                        Copy ({selectedPaths.length})
+                                                    </Button>
+                                                    <Button
+                                                        size="xs"
+                                                        variant="outline"
+                                                        color="orange"
+                                                        onClick={handleCut}
+                                                        leftSection={<IconScissors size={14} />}
+                                                    >
+                                                        Cut ({selectedPaths.length})
+                                                    </Button>
+                                                    <Button
+                                                        size="xs"
+                                                        variant="outline"
+                                                        color="pink"
+                                                        onClick={() => {
+                                                            setZipFileName('');
+                                                            setZipOpen(true);
+                                                        }}
+                                                        leftSection={<IconFileZip size={14} />}
+                                                    >
+                                                        Zip Selected
+                                                    </Button>
+                                                </>
+                                            )}
+                                            {clipboard.paths.length > 0 && (
+                                                <Button
+                                                    size="xs"
+                                                    variant="filled"
+                                                    color="green"
+                                                    onClick={handlePaste}
+                                                    leftSection={<IconClipboard size={14} />}
+                                                >
+                                                    Paste ({clipboard.paths.length})
+                                                </Button>
+                                            )}
+                                            <Button
+                                                size="xs"
+                                                variant="outline"
+                                                onClick={() => fetchExplorer(currentPath)}
+                                                loading={loadingExplorer}
+                                                leftSection={<IconRefresh size={14} />}
+                                            >
+                                                Refresh
+                                            </Button>
+                                        </Group>
                                     </Group>
 
                                     <Divider mb="sm" />
@@ -711,15 +966,40 @@ export default function MediaManager() {
                                         <Table striped highlightOnHover verticalSpacing="sm">
                                             <Table.Thead>
                                                 <Table.Tr>
+                                                    <Table.Th style={{ width: '40px' }}>
+                                                        <Checkbox
+                                                            checked={entries.length > 0 && selectedPaths.length === entries.length}
+                                                            indeterminate={selectedPaths.length > 0 && selectedPaths.length < entries.length}
+                                                            onChange={(e) => {
+                                                                if (e.currentTarget.checked) {
+                                                                    setSelectedPaths(entries.map((entry) => entry.path));
+                                                                } else {
+                                                                    setSelectedPaths([]);
+                                                                }
+                                                            }}
+                                                        />
+                                                    </Table.Th>
                                                     <Table.Th style={{ width: '50%' }}>Name</Table.Th>
                                                     <Table.Th>Size</Table.Th>
                                                     <Table.Th>Type</Table.Th>
-                                                    <Table.Th style={{ width: '180px' }}>Actions</Table.Th>
+                                                    <Table.Th style={{ width: '220px' }}>Actions</Table.Th>
                                                 </Table.Tr>
                                             </Table.Thead>
                                             <Table.Tbody>
                                                 {entries.map((entry) => (
                                                     <Table.Tr key={entry.name}>
+                                                        <Table.Td>
+                                                            <Checkbox
+                                                                checked={selectedPaths.includes(entry.path)}
+                                                                onChange={(e) => {
+                                                                    if (e.currentTarget.checked) {
+                                                                        setSelectedPaths((prev) => [...prev, entry.path]);
+                                                                    } else {
+                                                                        setSelectedPaths((prev) => prev.filter((p) => p !== entry.path));
+                                                                    }
+                                                                }}
+                                                            />
+                                                        </Table.Td>
                                                         <Table.Td>
                                                             <Group gap="xs">
                                                                 {entry.type === 'directory' ? (
@@ -754,7 +1034,7 @@ export default function MediaManager() {
                                                             </Badge>
                                                         </Table.Td>
                                                         <Table.Td>
-                                                            <Group gap={8}>
+                                                            <Group gap={4}>
                                                                 {entry.type === 'file' && (
                                                                     <Button
                                                                         size="xs"
@@ -766,6 +1046,40 @@ export default function MediaManager() {
                                                                     >
                                                                         Play
                                                                     </Button>
+                                                                )}
+                                                                {entry.type === 'directory' && (
+                                                                    <Button
+                                                                        size="xs"
+                                                                        variant="light"
+                                                                        color="green"
+                                                                        component="a"
+                                                                        href={`/?play=${encodeURIComponent(entry.path)}&folder=true`}
+                                                                        leftSection={<IconPlayerPlay size={12} />}
+                                                                    >
+                                                                        Play Folder
+                                                                    </Button>
+                                                                )}
+                                                                <ActionIcon
+                                                                    variant="subtle"
+                                                                    color="blue"
+                                                                    onClick={() => {
+                                                                        setRenameTarget(entry);
+                                                                        setRenameNewName(entry.name);
+                                                                        setRenameOpen(true);
+                                                                    }}
+                                                                    title="Rename"
+                                                                >
+                                                                    <IconEdit size={16} />
+                                                                </ActionIcon>
+                                                                {entry.name.endsWith('.zip') && (
+                                                                    <ActionIcon
+                                                                        variant="subtle"
+                                                                        color="teal"
+                                                                        onClick={() => handleUnzip(entry.path)}
+                                                                        title="Extract Zip"
+                                                                    >
+                                                                        <IconArchive size={16} />
+                                                                    </ActionIcon>
                                                                 )}
                                                                 <ActionIcon
                                                                     variant="subtle"
@@ -977,15 +1291,22 @@ export default function MediaManager() {
                                                         <Title order={5}>
                                                             Episodes ({episodes.length})
                                                         </Title>
-                                                        <Button
-                                                            size="xs"
-                                                            color="green"
-                                                            onClick={handleQueueSelectedEpisodes}
-                                                            loading={queuingAll}
-                                                            disabled={selectedEpisodeLinks.length === 0}
-                                                        >
-                                                            Download Selected ({selectedEpisodeLinks.length})
-                                                        </Button>
+                                                        <Group gap="sm">
+                                                            <Checkbox
+                                                                label="Save inside subfolder with season name"
+                                                                checked={scraperFolderDownload}
+                                                                onChange={(e) => setScraperFolderDownload(e.currentTarget.checked)}
+                                                            />
+                                                            <Button
+                                                                size="xs"
+                                                                color="green"
+                                                                onClick={handleQueueSelectedEpisodes}
+                                                                loading={queuingAll}
+                                                                disabled={selectedEpisodeLinks.length === 0}
+                                                            >
+                                                                Download Selected ({selectedEpisodeLinks.length})
+                                                            </Button>
+                                                        </Group>
                                                     </Group>
                                                     <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
                                                         <Table striped highlightOnHover verticalSpacing="xs">
@@ -1027,8 +1348,9 @@ export default function MediaManager() {
                                                                                     onClick={() => {
                                                                                         const cleanShowTitle = selectedMovie.mainTitle || selectedMovie.title || 'Series';
                                                                                         const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title}.mp4`;
+                                                                                        const subfolder = scraperFolderDownload ? `${cleanShowTitle} - ${selectedSeasonLabel}` : undefined;
                                                                                         if (!epLink) return;
-                                                                                        handleQueueScraperDownload(epLink, filename, 'episode');
+                                                                                        handleQueueScraperDownload(epLink, filename, 'episode', subfolder);
                                                                                     }}
                                                                                     loading={queuingGid === epLink}
                                                                                 >
@@ -1045,6 +1367,60 @@ export default function MediaManager() {
                                             )}
                                         </Stack>
                                     )}
+                                </Modal>
+
+                                {/* ---------------- New Folder Modal ---------------- */}
+                                <Modal opened={createFolderOpen} onClose={() => setCreateFolderOpen(false)} title="Create New Folder">
+                                    <form onSubmit={handleCreateFolder}>
+                                        <Stack gap="sm">
+                                            <TextInput
+                                                label="Folder Name"
+                                                placeholder="Enter folder name"
+                                                value={newFolderName}
+                                                onChange={(e) => setNewFolderName(e.currentTarget.value)}
+                                                required
+                                            />
+                                            <Button type="submit" fullWidth>
+                                                Create Folder
+                                            </Button>
+                                        </Stack>
+                                    </form>
+                                </Modal>
+
+                                {/* ---------------- Rename Modal ---------------- */}
+                                <Modal opened={renameOpen} onClose={() => { setRenameOpen(false); setRenameTarget(null); }} title="Rename File / Folder">
+                                    <form onSubmit={handleRename}>
+                                        <Stack gap="sm">
+                                            <TextInput
+                                                label="New Name"
+                                                placeholder="Enter new name"
+                                                value={renameNewName}
+                                                onChange={(e) => setRenameNewName(e.currentTarget.value)}
+                                                required
+                                            />
+                                            <Button type="submit" fullWidth>
+                                                Rename
+                                            </Button>
+                                        </Stack>
+                                    </form>
+                                </Modal>
+
+                                {/* ---------------- Zip Modal ---------------- */}
+                                <Modal opened={zipOpen} onClose={() => setZipOpen(false)} title="Zip Selected Items">
+                                    <form onSubmit={handleZip}>
+                                        <Stack gap="sm">
+                                            <TextInput
+                                                label="Target Zip File Name"
+                                                placeholder="e.g. archive (do not include .zip)"
+                                                value={zipFileName}
+                                                onChange={(e) => setZipFileName(e.currentTarget.value)}
+                                                required
+                                            />
+                                            <Button type="submit" fullWidth>
+                                                Compress to Zip
+                                            </Button>
+                                        </Stack>
+                                    </form>
                                 </Modal>
                             </Stack>
                         </Tabs.Panel>
@@ -1131,6 +1507,34 @@ export default function MediaManager() {
 
                                 <Card withBorder>
                                     <Title order={5} mb="xs">
+                                        Theme Customization
+                                    </Title>
+                                    <Text size="sm" c="dimmed" mb="md">
+                                        Personalize your dashboard theme style by picking a custom accent color saved locally.
+                                    </Text>
+                                    <Select
+                                        label="Select Theme Accent Color"
+                                        value={accentColor}
+                                        onChange={(val) => {
+                                            if (val) {
+                                                setAccentColor(val);
+                                                localStorage.setItem('watchparty_accent_color', val);
+                                            }
+                                        }}
+                                        data={[
+                                            { value: 'blue', label: 'Neon Blue' },
+                                            { value: 'violet', label: 'Cyberpunk Violet' },
+                                            { value: 'teal', label: 'Electric Teal' },
+                                            { value: 'grape', label: 'Grape Fusion' },
+                                            { value: 'orange', label: 'Sunset Orange' },
+                                            { value: 'lime', label: 'Neon Lime' },
+                                        ]}
+                                        style={{ maxWidth: '300px' }}
+                                    />
+                                </Card>
+
+                                <Card withBorder>
+                                    <Title order={5} mb="xs">
                                         Preferences & Guide
                                     </Title>
                                     <Text size="sm" c="dimmed">
@@ -1145,5 +1549,6 @@ export default function MediaManager() {
                 </Container>
             </AppShell.Main>
         </AppShell>
+        </MantineProvider>
     );
 }

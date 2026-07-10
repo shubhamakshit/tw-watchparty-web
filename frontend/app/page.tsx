@@ -8,6 +8,7 @@ import {
     Burger,
     Button,
     Card,
+    Checkbox,
     Divider,
     Grid,
     Group,
@@ -25,6 +26,7 @@ import {
     TextInput,
     Title,
     useMantineColorScheme,
+    MantineProvider,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
@@ -203,6 +205,14 @@ export default function Home() {
     const [starting, setStarting] = useState(false);
     const [startError, setStartError] = useState<string | null>(null);
 
+    const [accentColor, setAccentColor] = useState('blue');
+    const [historyList, setHistoryList] = useState<any[]>([]);
+    const [resumeTime, setResumeTime] = useState<number | null>(null);
+    const [shouldResume, setShouldResume] = useState(false);
+    const [isFolder, setIsFolder] = useState(false);
+    const [sortOption, setSortOption] = useState('natural');
+    const lastSavedTimeRef = useRef<number | null>(null);
+
     const populateForm = (req: StartVLCRequest) => {
         setVideoPath(req.video_path);
         setStreamKey(req.stream_key || '');
@@ -358,19 +368,33 @@ export default function Home() {
         };
     }, []);
 
+    const fetchHistory = () => {
+        fetch(APIManager.GET_HISTORY())
+            .then((res) => res.json())
+            .then((data) => {
+                setHistoryList(data.history || []);
+            })
+            .catch(() => {});
+    };
+
     // Load twitch key, rtmpUrl, and check play query param on mount
     useEffect(() => {
         const savedKey = localStorage.getItem('twitch_stream_key');
         if (savedKey) setStreamKey(savedKey);
         const savedRtmp = localStorage.getItem('rtmp_url');
         if (savedRtmp) setRtmpUrl(savedRtmp);
+        const savedAccent = localStorage.getItem('watchparty_accent_color');
+        if (savedAccent) setAccentColor(savedAccent);
+        fetchHistory();
 
         const urlParams = new URLSearchParams(window.location.search);
         const playPath = urlParams.get('play');
+        const isFolderParam = urlParams.get('folder') === 'true';
         if (playPath) {
             window.history.replaceState({}, document.title, window.location.pathname);
             setIsReconfiguring(false);
             setVideoPath(playPath);
+            setIsFolder(isFolderParam);
             openStartModal();
         }
     }, []);
@@ -397,7 +421,7 @@ export default function Home() {
 
     // Probe video file when videoPath is selected/typed
     useEffect(() => {
-        if (!videoPath.trim()) {
+        if (!videoPath.trim() || isFolder) {
             setAudioTracks([]);
             setSubTracks([]);
             setSelectedAudioTrack(null);
@@ -441,6 +465,23 @@ export default function Home() {
             });
     }, [videoPath, shouldAutoSelectTracks]);
 
+    // Match history and set resumeTime
+    useEffect(() => {
+        if (!videoPath.trim() || isFolder) {
+            setResumeTime(null);
+            setShouldResume(false);
+            return;
+        }
+        const matched = historyList.find((h) => h.file_path === videoPath);
+        if (matched && matched.resume_position > 0) {
+            setResumeTime(matched.resume_position);
+            setShouldResume(true);
+        } else {
+            setResumeTime(null);
+            setShouldResume(false);
+        }
+    }, [videoPath, historyList, isFolder]);
+
     // Poll status and logs of the active instance every 1s
     useEffect(() => {
         if (pollRef.current) clearInterval(pollRef.current);
@@ -462,6 +503,25 @@ export default function Home() {
                             const currentVolPct = Math.round((res.message.volume / 256) * 100);
                             setVolume(currentVolPct);
                             setIsMuted(res.message.volume === 0);
+                        }
+                        
+                        // Save progress to history every 10 seconds
+                        const now = Date.now();
+                        if (res.message && res.message.time > 0 && (!lastSavedTimeRef.current || now - lastSavedTimeRef.current >= 10000)) {
+                            lastSavedTimeRef.current = now;
+                            const activeInst = instances.find((i) => i.id === id);
+                            if (activeInst && activeInst.video_path) {
+                                fetch(APIManager.UPDATE_HISTORY(), {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        file_path: activeInst.video_path,
+                                        resume_position: res.message.time
+                                    })
+                                }).then(() => {
+                                    fetchHistory();
+                                }).catch(() => {});
+                            }
                         }
                     }
                 })
@@ -624,6 +684,8 @@ export default function Home() {
                 samplerate,
                 preset,
                 keyint,
+                start_time: (shouldResume && resumeTime) ? resumeTime : undefined,
+                sort_by: isFolder ? sortOption : undefined,
             }),
         })
             .then(async (res) => {
@@ -642,6 +704,7 @@ export default function Home() {
                 closeStartModal();
                 setVideoPath('');
                 setInstanceName('');
+                fetchHistory();
             })
             .catch((err) => setStartError(String(err.message ?? err)))
             .finally(() => setStarting(false));
@@ -700,11 +763,12 @@ export default function Home() {
         | undefined;
 
     return (
-        <AppShell
-            header={{ height: 60 }}
-            navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !navOpened, desktop: false } }}
-            padding="md"
-        >
+        <MantineProvider theme={{ primaryColor: accentColor }} forceColorScheme="dark">
+            <AppShell
+                header={{ height: 60 }}
+                navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !navOpened, desktop: false } }}
+                padding="md"
+            >
             <AppShell.Header>
                 <Group h="100%" px="md" justify="space-between" style={{ width: '100%', flexWrap: 'nowrap' }}>
                     <Group gap="xs" style={{ flexWrap: 'nowrap' }}>
@@ -1268,6 +1332,27 @@ export default function Home() {
                             ]}
                         />
                     )}
+                    {resumeTime !== null && resumeTime > 0 && (
+                        <Checkbox
+                            label={`Resume playback from last position: ${formatTime(resumeTime)}`}
+                            checked={shouldResume}
+                            onChange={(e) => setShouldResume(e.currentTarget.checked)}
+                        />
+                    )}
+
+                    {isFolder && (
+                        <Select
+                            label="Folder Playlist Sort Order"
+                            value={sortOption}
+                            onChange={(val) => setSortOption(val || 'natural')}
+                            data={[
+                                { value: 'natural', label: 'Natural Alphanumeric (1, 2, ... 10)' },
+                                { value: 'ctime_oldest', label: 'Date Created (Oldest First)' },
+                                { value: 'ctime_newest', label: 'Date Created (Newest First)' },
+                            ]}
+                        />
+                    )}
+
                     <TextInput
                         label="Instance name"
                         placeholder="optional label, defaults to a random id"
@@ -1461,5 +1546,6 @@ export default function Home() {
                 </Stack>
             </Modal>
         </AppShell>
+        </MantineProvider>
     );
 }

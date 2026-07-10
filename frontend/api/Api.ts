@@ -128,6 +128,44 @@ class APIManager {
     static ACER_DOWNLOAD(): string {
         return `${APIManager.baseUrl}/acer/download`;
     }
+
+    // ---- Watch History & File Manager Extras ----
+
+    static EXPLORER_MKDIR(): string {
+        return `${APIManager.baseUrl}/explorer/mkdir`;
+    }
+
+    static EXPLORER_RENAME(): string {
+        return `${APIManager.baseUrl}/explorer/rename`;
+    }
+
+    static EXPLORER_COPY(): string {
+        return `${APIManager.baseUrl}/explorer/copy`;
+    }
+
+    static EXPLORER_MOVE(): string {
+        return `${APIManager.baseUrl}/explorer/move`;
+    }
+
+    static EXPLORER_UPLOAD(): string {
+        return `${APIManager.baseUrl}/explorer/upload`;
+    }
+
+    static EXPLORER_ZIP(): string {
+        return `${APIManager.baseUrl}/explorer/zip`;
+    }
+
+    static EXPLORER_UNZIP(): string {
+        return `${APIManager.baseUrl}/explorer/unzip`;
+    }
+
+    static GET_HISTORY(): string {
+        return `${APIManager.baseUrl}/history`;
+    }
+
+    static UPDATE_HISTORY(): string {
+        return `${APIManager.baseUrl}/history/resume`;
+    }
 }
 
 export default APIManager;
