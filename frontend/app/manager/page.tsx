@@ -154,9 +154,12 @@ export default function MediaManager() {
                 if (data.meta) {
                     setSelectedMovie((prev: any) => ({
                         ...prev,
+                        mainTitle: data.meta.mainTitle,
+                        title: data.meta.title || prev.title,
                         image: data.meta.image || prev.image,
                         synopsis: data.meta.synopsis,
                         type: data.meta.type,
+                        imdbId: data.meta.imdbId,
                     }));
                 }
             })
@@ -173,7 +176,7 @@ export default function MediaManager() {
         fetch(APIManager.ACER_EPISODES(), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: quality.episodes_api_url }),
+            body: JSON.stringify({ url: quality.episodesUrl || quality.episodes_api_url }),
         })
             .then(async (res) => {
                 const data = await res.json();
@@ -218,10 +221,13 @@ export default function MediaManager() {
         try {
             for (let i = 0; i < episodes.length; i++) {
                 const ep = episodes[i];
-                const cleanShowTitle = selectedMovie.title || 'Series';
+                const cleanShowTitle = selectedMovie.mainTitle || selectedMovie.title || 'Series';
                 const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title || `Episode_${i+1}`}.mp4`;
+                const epLink = ep.link || ep.url;
+                if (!epLink) continue;
+
                 try {
-                    await handleQueueScraperDownload(ep.url, filename, 'episode');
+                    await handleQueueScraperDownload(epLink, filename, 'episode');
                     successCount++;
                     await new Promise((r) => setTimeout(r, 400));
                 } catch (e) {
@@ -833,14 +839,35 @@ export default function MediaManager() {
                                                     />
                                                 )}
                                                 <Stack gap="xs" style={{ flex: 1 }}>
-                                                    <Title order={4}>{selectedMovie.title}</Title>
-                                                    {selectedMovie.type && (
-                                                        <Badge color="blue" variant="light" style={{ alignSelf: 'flex-start' }}>
-                                                            {selectedMovie.type}
-                                                        </Badge>
+                                                    <Title order={4}>
+                                                        {selectedMovie.mainTitle || selectedMovie.title}
+                                                    </Title>
+                                                    {selectedMovie.mainTitle && (
+                                                        <Text size="xs" c="dimmed" fw={500}>
+                                                            {selectedMovie.title}
+                                                        </Text>
                                                     )}
+                                                    <Group gap="xs" mt={2}>
+                                                        {selectedMovie.type && (
+                                                            <Badge color="blue" variant="light">
+                                                                {selectedMovie.type}
+                                                            </Badge>
+                                                        )}
+                                                        {selectedMovie.imdbId && (
+                                                            <Badge
+                                                                component="a"
+                                                                href={`https://www.imdb.com/title/${selectedMovie.imdbId}`}
+                                                                target="_blank"
+                                                                color="yellow"
+                                                                variant="filled"
+                                                                style={{ cursor: 'pointer' }}
+                                                            >
+                                                                IMDb
+                                                            </Badge>
+                                                        )}
+                                                    </Group>
                                                     {selectedMovie.synopsis && (
-                                                        <Text size="xs" c="dimmed" lineClamp={4}>
+                                                        <Text size="xs" style={{ lineHeight: '1.4' }}>
                                                             {selectedMovie.synopsis}
                                                         </Text>
                                                     )}
@@ -860,7 +887,7 @@ export default function MediaManager() {
                                             ) : (
                                                 <Group gap="xs" mb="md">
                                                     {qualities.map((q, idx) => {
-                                                        const isTvSeason = q.episodes_api_url;
+                                                        const isTvSeason = q.episodesUrl || q.episodes_api_url;
                                                         const isSelectedSeason = selectedSeasonLabel === q.title;
 
                                                         return (
@@ -872,7 +899,7 @@ export default function MediaManager() {
                                                                     if (isTvSeason) {
                                                                         handleFetchEpisodes(q);
                                                                     } else {
-                                                                        const cleanMovieTitle = selectedMovie.title || 'Movie';
+                                                                        const cleanMovieTitle = selectedMovie.mainTitle || selectedMovie.title || 'Movie';
                                                                         const qualityLabel = q.quality || 'Direct';
                                                                         const filename = `${cleanMovieTitle}_${qualityLabel}.mp4`;
                                                                         handleQueueScraperDownload(q.url, filename, 'movie')
@@ -926,13 +953,15 @@ export default function MediaManager() {
                                                                                 size="xs"
                                                                                 variant="light"
                                                                                 onClick={() => {
-                                                                                    const cleanShowTitle = selectedMovie.title || 'Series';
+                                                                                    const cleanShowTitle = selectedMovie.mainTitle || selectedMovie.title || 'Series';
                                                                                     const filename = `${cleanShowTitle}_${selectedSeasonLabel}_${ep.title}.mp4`;
-                                                                                    handleQueueScraperDownload(ep.url, filename, 'episode')
+                                                                                    const epLink = ep.link || ep.url;
+                                                                                    if (!epLink) return;
+                                                                                    handleQueueScraperDownload(epLink, filename, 'episode')
                                                                                         .then(() => alert(`Queued episode: ${filename}`))
                                                                                         .catch(() => {});
                                                                                 }}
-                                                                                loading={queuingGid === ep.url}
+                                                                                loading={queuingGid === (ep.link || ep.url)}
                                                                             >
                                                                                 Queue
                                                                             </Button>
