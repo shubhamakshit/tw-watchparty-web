@@ -847,19 +847,19 @@ export default function MediaManager() {
                                                     }}
                                                     onClick={() => handleFetchQualities(result)}
                                                 >
-                                                    <Group justify="space-between">
-                                                        <Group gap="sm" style={{ flex: 1, marginRight: '10px' }}>
+                                                    <Group justify="space-between" wrap="nowrap">
+                                                        <Group gap="sm" style={{ flex: 1, marginRight: '10px' }} wrap="nowrap" align="flex-start">
                                                             {result.image && (
                                                                 <Image
                                                                     src={result.image}
-                                                                    w={40}
-                                                                    h={60}
-                                                                    fallbackSrc="https://placehold.co/40x60?text=No+Poster"
+                                                                    w={55}
+                                                                    h={80}
+                                                                    fallbackSrc="https://placehold.co/55x80?text=No+Poster"
                                                                     radius="xs"
                                                                 />
                                                             )}
-                                                            <Stack gap={2} style={{ flex: 1 }}>
-                                                                <Text size="sm" fw={600} truncate>
+                                                            <Stack gap={4} style={{ flex: 1 }}>
+                                                                <Text size="sm" fw={600} style={{ wordBreak: 'break-word', whiteSpace: 'normal' }}>
                                                                     {result.title}
                                                                 </Text>
                                                                 <Text size="xs" c="dimmed" lineClamp={2}>
@@ -867,7 +867,7 @@ export default function MediaManager() {
                                                                 </Text>
                                                             </Stack>
                                                         </Group>
-                                                        <Button size="xs" variant="light" leftSection={<IconPlus size={12} />}>
+                                                        <Button size="xs" variant="light" leftSection={<IconPlus size={12} />} style={{ flexShrink: 0 }}>
                                                             Fetch
                                                         </Button>
                                                     </Group>
