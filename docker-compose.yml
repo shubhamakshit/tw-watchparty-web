@@ -5,7 +5,7 @@ services:
     build: .
     container_name: watchparty-bridge
     ports:
-      - "8000:8000"
+      - "7860:7860"
       # Expose dynamic ports if you want to inspect VLC HTTP/Telnet directly:
       # - "4200-4250:4200-4250"
     environment:
