@@ -24,6 +24,7 @@ import {
     Tooltip,
     Alert,
     AppShell,
+    Modal,
     useMantineColorScheme,
     Image,
     LoadingOverlay,
@@ -825,63 +826,67 @@ export default function MediaManager() {
                                     </form>
                                 </Card>
 
-                                <SimpleGrid cols={{ base: 1, md: selectedMovie ? 2 : 1 }} spacing="md">
-                                    {/* Search Results Column */}
-                                    <Card withBorder>
-                                        <Title order={5} mb="md">
-                                            Search Results ({scraperResults.length})
-                                        </Title>
-                                        {scraperResults.length === 0 ? (
-                                            <Text c="dimmed" ta="center" py="xl">
-                                                Search for a title above to find movies and shows to download.
-                                            </Text>
-                                        ) : (
-                                            <Stack gap="xs" style={{ maxHeight: '500px', overflowY: 'auto' }}>
-                                                {scraperResults.map((result, idx) => (
-                                                    <Card
-                                                        key={idx}
-                                                        withBorder
-                                                        padding="sm"
-                                                        style={{
-                                                            cursor: 'pointer',
-                                                            backgroundColor: selectedMovie?.url === result.url ? 'var(--mantine-color-blue-light)' : 'transparent',
-                                                        }}
-                                                        onClick={() => handleFetchQualities(result)}
-                                                    >
-                                                        <Group justify="space-between">
-                                                            <Group gap="sm" style={{ flex: 1, marginRight: '10px' }}>
-                                                                {result.image && (
-                                                                    <Image
-                                                                        src={result.image}
-                                                                        w={40}
-                                                                        h={60}
-                                                                        fallbackSrc="https://placehold.co/40x60?text=No+Poster"
-                                                                        radius="xs"
-                                                                    />
-                                                                )}
-                                                                <Stack gap={2} style={{ flex: 1 }}>
-                                                                    <Text size="sm" fw={600} truncate>
-                                                                        {result.title}
-                                                                    </Text>
-                                                                    <Text size="xs" c="dimmed" lineClamp={2}>
-                                                                        {result.description || 'No description'}
-                                                                    </Text>
-                                                                </Stack>
-                                                            </Group>
-                                                            <Button size="xs" variant="light" leftSection={<IconPlus size={12} />}>
-                                                                Fetch
-                                                            </Button>
+                                <Card withBorder>
+                                    <Title order={5} mb="md">
+                                        Search Results ({scraperResults.length})
+                                    </Title>
+                                    {scraperResults.length === 0 ? (
+                                        <Text c="dimmed" ta="center" py="xl">
+                                            Search for a title above to find movies and shows to download.
+                                        </Text>
+                                    ) : (
+                                        <Stack gap="xs" style={{ maxHeight: '500px', overflowY: 'auto' }}>
+                                            {scraperResults.map((result, idx) => (
+                                                <Card
+                                                    key={idx}
+                                                    withBorder
+                                                    padding="sm"
+                                                    style={{
+                                                        cursor: 'pointer',
+                                                        backgroundColor: selectedMovie?.url === result.url ? 'var(--mantine-color-blue-light)' : 'transparent',
+                                                    }}
+                                                    onClick={() => handleFetchQualities(result)}
+                                                >
+                                                    <Group justify="space-between">
+                                                        <Group gap="sm" style={{ flex: 1, marginRight: '10px' }}>
+                                                            {result.image && (
+                                                                <Image
+                                                                    src={result.image}
+                                                                    w={40}
+                                                                    h={60}
+                                                                    fallbackSrc="https://placehold.co/40x60?text=No+Poster"
+                                                                    radius="xs"
+                                                                />
+                                                            )}
+                                                            <Stack gap={2} style={{ flex: 1 }}>
+                                                                <Text size="sm" fw={600} truncate>
+                                                                    {result.title}
+                                                                </Text>
+                                                                <Text size="xs" c="dimmed" lineClamp={2}>
+                                                                    {result.description || 'No description'}
+                                                                </Text>
+                                                            </Stack>
                                                         </Group>
-                                                    </Card>
-                                                ))}
-                                            </Stack>
-                                        )}
-                                    </Card>
+                                                        <Button size="xs" variant="light" leftSection={<IconPlus size={12} />}>
+                                                            Fetch
+                                                        </Button>
+                                                    </Group>
+                                                </Card>
+                                            ))}
+                                        </Stack>
+                                    )}
+                                </Card>
 
-                                    {/* Qualities & Episodes Details Column */}
+                                <Modal
+                                    opened={!!selectedMovie}
+                                    onClose={() => setSelectedMovie(null)}
+                                    size="lg"
+                                    title={selectedMovie?.mainTitle || selectedMovie?.title || 'Media Details'}
+                                    centered
+                                >
                                     {selectedMovie && (
-                                        <Card withBorder>
-                                            <Group align="flex-start" mb="md" gap="md" wrap="nowrap">
+                                        <Stack gap="md">
+                                            <Group align="flex-start" gap="md" wrap="nowrap">
                                                 {selectedMovie.image && (
                                                     <Image
                                                         src={selectedMovie.image}
@@ -892,11 +897,8 @@ export default function MediaManager() {
                                                     />
                                                 )}
                                                 <Stack gap="xs" style={{ flex: 1 }}>
-                                                    <Title order={4}>
-                                                        {selectedMovie.mainTitle || selectedMovie.title}
-                                                    </Title>
                                                     {selectedMovie.mainTitle && (
-                                                        <Text size="xs" c="dimmed" fw={500}>
+                                                        <Text size="xs" c="dimmed" fw={500} lineClamp={2}>
                                                             {selectedMovie.title}
                                                         </Text>
                                                     )}
@@ -927,18 +929,18 @@ export default function MediaManager() {
                                                 </Stack>
                                             </Group>
 
-                                            <Divider mb="md" />
+                                            <Divider my="xs" />
 
                                             {/* Qualities / Seasons selection */}
-                                            <Title order={5} mb="sm">
+                                            <Title order={5}>
                                                 Available Sources / Seasons
                                             </Title>
                                             {qualities.length === 0 ? (
-                                                <Text c="dimmed" size="xs" mb="md">
+                                                <Text c="dimmed" size="xs">
                                                     No source qualities found.
                                                 </Text>
                                             ) : (
-                                                <Group gap="xs" mb="md">
+                                                <Group gap="xs">
                                                     {qualities.map((q, idx) => {
                                                         const isTvSeason = q.episodesUrl || q.episodes_api_url;
                                                         const isSelectedSeason = selectedSeasonLabel === q.title;
@@ -1040,9 +1042,9 @@ export default function MediaManager() {
                                                     </div>
                                                 </Stack>
                                             )}
-                                        </Card>
+                                        </Stack>
                                     )}
-                                </SimpleGrid>
+                                </Modal>
                             </Stack>
                         </Tabs.Panel>
 
